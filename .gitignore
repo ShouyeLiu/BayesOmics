@@ -1,0 +1,40 @@
+# All the crap cmake generates:
+Testing
+CMakeFiles
+cmake_install.cmake
+CTestTestfile.cmake
+CMakeLists.txt.user
+CMakeCache.txt
+configure/bin/*
+# Build files:
+Debug
+Release
+
+debug/
+release/
+samples/
+
+build*
+build/*
+*.a
+*.o
+
+# IDE files:
+*.swp
+.idea
+.vscode
+
+# Visual Studio files:
+*.vcxproj
+*.filters
+*.dir
+*.sln
+*.opensdf
+*.sdf
+*.suo
+
+# Mercurial:
+.hg
+
+# For OSX users:
+.DS_Store
