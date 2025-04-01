@@ -12,7 +12,6 @@ Release
 
 debug/
 release/
-samples/
 
 build*
 build/*
