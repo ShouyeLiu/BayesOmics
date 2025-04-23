@@ -1,10 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
-//  gadgets.cpp
-//  gctb
+// This file is part of BayesOmics, a statistical genetics software package
+// developed by Shouye Liu.
 //
-//  Created by Jian Zeng on 14/06/2016.
-//  Copyright © 2016 Jian Zeng. All rights reserved.
+// Copyright (C) 2025 Shouye Liu <syliu.xue@foxmail.com>
 //
+// BayesOmics is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// BayesOmics is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with BayesOmics. If not, see <https://www.gnu.org/licenses/>.
+
 
 #include "Gadgets.hpp"
 #include <random>
