@@ -351,7 +351,7 @@ void Stat::WishartBase::triMultLiX(Ref<MatrixXd> X, const Eigen::MatrixBase<T1>&
 #ifdef _MSC_VER
 	L.template triangularView<Eigen::Lower>().solveInPlace(X);
 #else
-	L.template triangularView<Eigen::Lower>().template solveInPlace(X);
+	L.template triangularView<Eigen::Lower>().solveInPlace(X);
 #endif
 	return;
 }
