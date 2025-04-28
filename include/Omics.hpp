@@ -18,8 +18,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
 
 
-#ifndef amber_hpp
-#define amber_hpp
+#ifndef omics_hpp
+#define omics_hpp
 
 #include "Data.hpp"
 #include "Options.hpp"
