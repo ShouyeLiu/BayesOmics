@@ -25,11 +25,3 @@ to build in DEBUG mode.
 Run all tests
 
     ctest
-
-
-
-
-## Authors
-
-Shouye Liu (University of Queensland)
-
