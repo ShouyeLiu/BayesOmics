@@ -28,14 +28,6 @@ Run all tests
 
 
 
-## Citation
-
-If you use the software , please cite
-
-[Shouye Liu, et al. unknown.
-unknown, 2025.]()
-
-
 
 ## Authors
 
