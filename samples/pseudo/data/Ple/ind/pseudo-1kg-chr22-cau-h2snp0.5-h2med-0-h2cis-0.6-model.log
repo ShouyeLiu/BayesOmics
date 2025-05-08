@@ -1,0 +1,45 @@
+PLINK v2.00a6 M1 (23 Nov 2023)
+Options in effect:
+  --make-pgen
+  --map /Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model.map
+  --out /Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model
+  --ped /Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model.ped
+
+Hostname: MOE-FVFGL060Q6LX
+Working directory: /Users/uqsliu28/Documents/personal/R/SBayesOmics-private/inst/scripts
+Start time: Fri May  2 22:32:45 2025
+
+Random number seed: 1746189165
+16384 MiB RAM detected; reserving 8192 MiB for main workspace.
+Using up to 8 compute threads.
+--pedmap: 283 variants in .map file.
+--pedmap: 10000 samples present, genotypes extracted to
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model-temporary.bed.smaj
+.
+Transposing sample-major .bed to
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model-temporary.pgen
+, and setting major alleles to provisional-REF.
+Transpose complete.
+--pedmap:
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model-temporary.pgen
++
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model-temporary.pvar
++
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model-temporary.psam
+written. .bed.smaj and .fam.tmp temporary files deleted.
+10000 samples (0 females, 0 males, 10000 ambiguous; 0 founders) loaded from
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model-temporary.psam.
+283 variants loaded from
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model-temporary.pvar.
+Note: No phenotype data present.
+Writing
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model.psam
+... done.
+Writing
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model.pvar
+... done.
+Writing
+/Users/uqsliu28/Documents/personal/cpp/BayesOmics-private/samples/pseudo/data//Ple//ind/pseudo-1kg-chr22-cau-h2snp0.5-h2med-0-h2cis-0.6-model.pgen
+... done.
+
+End time: Fri May  2 22:32:45 2025

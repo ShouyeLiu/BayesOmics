@@ -1,0 +1,7 @@
+     Block  Chrom     StartSnpIdx      StartSnpID       EndSnpIdx        EndSnpID      NumSnps
+       582     22               0       rs2379965              21       rs5993671           22
+       583     22              22       rs5748443              56       rs3788310           35
+       584     22              57       rs1008560              72       rs5757691           16
+       588     22              73       rs2142833             157        rs138951           85
+       589     22             158        rs876418             246       rs3827393           89
+       591     22             247       rs2236031             282       rs5770916           36
