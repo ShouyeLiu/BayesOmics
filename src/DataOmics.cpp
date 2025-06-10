@@ -331,19 +331,15 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
     int i,j;
     vector<locus_bp> snpVec;
     SnpInfo *snp;
-
     map<int, string>  chrEndSnp;
     map<string, int> snpNameMap;
-
     for (i = 1; i < numIncdSnps; i++) {
         snp = incdSnpInfoVec[i];
         if(incdSnpInfoVec[i]->chrom != incdSnpInfoVec[i-1]->chrom){
             chrEndSnp.insert(pair<int, string>(incdSnpInfoVec[i - 1]->chrom,incdSnpInfoVec[i - 1]->rsID ));
         }
     }
-
     chrEndSnp.insert(pair<int, string>(incdSnpInfoVec[numIncdSnps - 1]->chrom,incdSnpInfoVec[numIncdSnps - 1]->rsID ));
-    
     for (i = 0; i < numIncdSnps; i++) {
         snp = incdSnpInfoVec[i];
         snpVec.push_back(locus_bp(snp->rsID, snp->chrom, snp->physPos ));
@@ -353,13 +349,12 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
     // Step 2. Map snps to genes
     /////////////////////////////////////////
     LOGGER << "Mapping the physical positions of genes to SNP data (gene boundaries: " << cisRegionWind / 1000 << "Kb away from the middle position of the gene) ..." << endl;
-
     vector<string> gene2snp_1(numGenes), gene2snp_2(numGenes);
     vector<locus_bp>::iterator iter;
     map<int, string>::iterator chrIter;
     GeneInfo *gene;
 
-#pragma omp parallel for private(iter, chrIter)
+    #pragma omp parallel for private(iter, chrIter)
     for (i = 0; i < numGenes; i++) {
         // find lowest snp_name in the gene
         gene = geneInfoVec[i];
@@ -368,7 +363,7 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
         if (iter != snpVec.end()) gene2snp_1[i] = iter->locusName;
         else gene2snp_1[i] = "NA";
     }
-#pragma omp parallel for private(iter, chrIter)
+    #pragma omp parallel for private(iter, chrIter)
     for (i = 0; i < numGenes; i++) { 
         gene = geneInfoVec[i];               
         if (gene2snp_1[i] == "NA") {
@@ -406,12 +401,9 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
     }
     if (mapped < 1) LOGGER.e(0, " No gene can be mapped to the SNP data. Please check the input data regarding chromosome and bp.");
     else LOGGER << mapped << " genes have been mapped to SNP data." << endl;
-
-
     //////////////////////////////////////////////////////////
     map<string, SnpInfo*>::iterator iterSnp;
     map<string, int>::iterator iter1, iter2;
-
     // geneEffectNames.clear();
     vector<int> snpNumInGene(numGenes);
     for (i = 0; i < numGenes; i++) {
@@ -421,7 +413,6 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
         iter2 = snpNameMap.find(gene2snp_2[i]);
         if (iter1 == snpNameMap.end() || iter2 == snpNameMap.end() || iter1->second >= iter2->second) gene->kept = false;
         snpNumInGene[i] = iter2->second - iter1->second + 1;
-        // cout << "geneID: " << gene->ensemblID << " snpNumInGene: " << snpNumInGene[i] << endl;
         if(!gene->kept) {
             LOGGER.w(0,"Gene [" + gene->ensemblID + "] is removed due to no moQTLs there.");
             continue;
@@ -440,15 +431,12 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
     ///////////////////////////////////////////////////////
     /////// Step 5. Construct EqtlInfo class
     ///////////////////////////////////////////////////////
-
     eqtlInfoVec.clear();
     eqtlInfoMap.clear();
     unsigned idx = 0;
     for (i = 0; i < numIncdSnps ; i++) {
         snp = incdSnpInfoVec[i];
-        if(!snp->iseQTL) {
-            continue;
-        }
+        if(!snp->iseQTL) {continue; }
         EqtlInfo *eqtl = new EqtlInfo(idx++,
         snp->rsID,
         snp->a1,
@@ -463,7 +451,6 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
         }
     }
     numeQTLs = eqtlInfoVec.size();
-
     ///////////////////////////////////////////////////////
     /////// Step 4. re-construct geneInfo class
     ///////////////////////////////////////////////////////
@@ -474,28 +461,10 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
     incdEqtlInfoVec = makeIncdEqtlInfoVec(eqtlInfoVec);
     numIncdEqtls = (unsigned) incdEqtlInfoVec.size();
 
-    // IndInfo *ind;
-    // for(unsigned i =0; i < 6;i++ ){
-    //     ind = indInfoGeneVec[i];
-    //     cout << "before ind: "  << ind->famID << endl;
-        
-    // }
-    // here we need to Construct new genotype matrix for gene cis-region in the first time, if there is something wrong we will reconstruct it.
     keptindInfoGeneVec = makeKeptIndInfoGeneVec(indInfoGeneVec);
-    // keptIndInfoVec = makeKeptIndInfoVec(indInfoVec);
     numKeptIndsGene =  (unsigned) keptindInfoGeneVec.size();
-
-    // for(unsigned i =0; i < 6;i++ ){
-    //     ind = keptindInfoGeneVec[i];
-    //     cout << "after ind: "  << ind->famID << endl;
-        
-    // }
-    
-
     readBedFileForGene(bedFile,noscale);
-
     includeMatchedEqtl();
-
     keptGeneInfoVec  = makeKeptGeneInfoVec(geneInfoVec);
     numKeptGenes = (unsigned) keptGeneInfoVec.size();
     LOGGER << "" << numIncdEqtls << " SNPs are included after mapping snps to "
@@ -683,7 +652,6 @@ void Data::ConstructGwasEqtlGeneMaps(){
     gene2cisSnpMap.clear();
     gwas2SnpIDMap.clear();
     gene2cisSnpIDMap.clear();
-
     geneEffectNames.clear();
     geneID2IdxMap.clear();
 
@@ -704,9 +672,6 @@ void Data::ConstructGwasEqtlGeneMaps(){
     vector<string> snpInterGenic;
     for(unsigned j = 0; j < numIncdSnps;j++){
         SnpInfo *snp = incdSnpInfoVec[j];
-        // if(snp->rsID == "rs140378") {
-        //     cout << "come here" << endl;
-        // }
         if(snp->iseQTL) continue;
         snpInterGenic.push_back(snp->rsID);
     }
@@ -738,13 +703,13 @@ void Data::ConstructGwasEqtlGeneMaps(){
             eQTLUniqSet.insert(eqtl->rsID);
             numEqtlOverlap ++;
             eqtl->eqtl2gene_count++; // for each eqtl, how many genes;
-            /// map snp to gene
+            /// map snp to gene 
             if(gwasSnpID2geneIDMap.find(iterSnp->first) != gwasSnpID2geneIDMap.end()){
-                // already in gene 
+            //// already in gene 
                 gwasSnpID2geneIDMap[iterSnp->first].push_back(gene->ensemblID);
                 gwasSnpID2geneIdxMap[iterSnp->first].push_back(geneIdx);
             } else{
-                // create new 
+            // create new 
                 gwasSnpID2geneIDMap.insert({iterSnp->first,{gene->ensemblID} });
                 std::vector<int> geneVec(1, geneIdx);
                 gwasSnpID2geneIdxMap.insert({iterSnp->first,geneVec} );
@@ -792,9 +757,7 @@ void Data::ConstructGenePheAndwAcorr(){
     for (unsigned i =0; i < numKeptGenes; i++){
         genePhePerGene.clear();
         genePheIdxPerGene.clear(); // map phen to fam file
-
         eqtlIndNamePerGene.clear();
-
         gene = keptGeneInfoVec[i];
         nTmp.resize(gene->cisSnpNameVec.size());
         // here we loop individuals just want to keep consistent order between gwas y and gene phenotype based on the order of fam file
@@ -810,13 +773,10 @@ void Data::ConstructGenePheAndwAcorr(){
             iterGenePhe = indGene->genePheMap.find(gene->ensemblID);
             if(iterGenePhe != indGene->genePheMap.end()){
                 genePhePerGene.push_back(iterGenePhe->second);
-                // LOGGER << " gene: " << gene->ensemblID << " idx: " << indIdx << " id: " << indGene->catID << " value: " << iterGenePhe->second  << endl;
                 // when constructing index, we need to map to raw genotype matrix X, so that we 
                 // just need to share data
                 genePheIdxPerGene.push_back(indIdx); // will be used to select individuals to 
                 eqtlIndNamePerGene.push_back(indGene->famID + "_" + indGene->indID );
-                
-
             }
             // since the dimension of genotype from cis-region may be different from that of whole genome,
             // we need genePheIdxPerGene to store indIdx for each gene
@@ -826,23 +786,75 @@ void Data::ConstructGenePheAndwAcorr(){
         VectorXd geneValEigen = VectorXd::Map(genePhePerGene.data(), genePhePerGene.size());
         nTmp.setConstant(genePhePerGene.size());
         VectorDat vectorDat = VectorDat(gene->cisSnpNameVec,nTmp);
-
-        // for(unsigned i = 0; i < 10; i++){
-        //     cout << eqtlIndNamePerGene[i] << " " << " ";
-        // }
-        // cout << " gene: " << gene->ensemblID << endl;
-
         // ypyeQTL[i] = (geneValEigen.array()-geneValEigen.mean()).square().sum();
         // varPhenotypiceQTL[i] = ypyeQTL[i]/((double) geneValEigen.size() -1);
         varPhenotypiceQTL[i] = Gadget::calcVariance(geneValEigen);
         // cout << "gene: " << gene->ensemblID << " i: " << i << " varPHe: " << varPhenotypiceQTL[i]  << endl;
         genePheVec.push_back(geneValEigen);
         neQTLVec.push_back(vectorDat);
-        // cout << "w: " << geneValEigen.head(6) << endl;
         wAcorr[i] = geneValEigen.array() - Gadget::calcMean(geneValEigen);
         /// Store index
         genePheIdxMap.insert(pair<string,vector<int>> (gene->ensemblID,genePheIdxPerGene));
     }
+}
+
+void Data::buildBayesOmicsMME(const string bedFile, const bool noscale, const bool haveGene){
+    ////////////////////////////////////////////////////////////
+    // Construct gwas information
+    ////////////////////////////////////////////////////////////
+    n.resize(numIncdSnps);
+    n.setConstant(Z.rows());
+    MatrixDat tmpZDat = MatrixDat(snpEffectNames,Z);
+    ZDat.push_back(tmpZDat);
+    wbcorr.array() = y.array() - Gadget::calcMean(y);
+    // check map
+    for (unsigned j =0; j < gene2gwasSnpMap.size(); j ++){
+        for (unsigned i = 0; i < gene2gwasSnpMap[j].size(); i ++) {
+            if (snpEffectNames[gene2gwasSnpMap[j][i]] != cisSnpIDVec[gene2cisSnpMap[j][i]]){
+                cout << snpEffectNames[gene2gwasSnpMap[j][i]] << "::" << cisSnpIDVec[gene2cisSnpMap[j][i]] << endl;
+                LOGGER.e(0, " gwas snp doesn't match eqtl snp.");
+            }
+        }
+    }
+    ////////////////////////////////////////////////////////////
+    // Construct gene part information
+    ////////////////////////////////////////////////////////////
+    if(haveGene){
+        LOGGER <<  "BayesOmics-Bivariate mode is chosen." << endl;
+    }else {
+        numNonEqtl = numIncdSnps;
+        numEqtlOverlap = 0;
+        numEqtl = 0;
+        numKeptGenes = 0;
+        gwasAndGeneEffectNames.clear();
+        gwasAndGeneEffectNames.push_back("nonEqtl");
+        gwasSnpID2geneIDMap.clear();
+        gene2gwasSnpMap.clear();
+        geneID2IdxMap.clear();
+        snp2pqNonEqtl = snp2pq;
+        LOGGER <<  "BayesOmics-Single mode is chosen." << endl;
+    }
+    ////////////////////////////////////////////////////////////
+    ///////////////  Data summary
+    ////////////////////////////////////////////////////////////
+    // LOGGER << "Data summary: " << endl;
+    // LOGGER << "Total GWAS SNPs: " << numIncdSnps << endl 
+    //     << "Total genes: " << numKeptGenes << endl 
+    //     << "Total cis-SNPs in gene cis-region: "        << numEqtl << endl
+    //     // << "Total cis-SNPs in gene overlap resion (including overlapping cis-SNPs): "   <<  numEqtlOverlap  << endl
+    //     << "Total GWAS SNPs in non-gene cis-region: " << numNonEqtl  << endl;
+    // LOGGER << "\nData summary:" << endl;
+    // LOGGER << boost::format("%60s %8s %8s\n") %"" %"mean" %"sd";
+    // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS Phenotypic variance" %Gadget::calcMean(varySnp) %sqrt(Gadget::calcVariance(varySnp));
+    // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS SNP heterozygosity" %Gadget::calcMean(snp2pq) %sqrt(Gadget::calcVariance(snp2pq));
+    // LOGGER << boost::format("%60s %8.0f %8.0f\n") %"GWAS SNP sample size" %Gadget::calcMean(n) %sqrt(Gadget::calcVariance(n));
+    // // xQTL info
+    // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL Phenotypic variance" %Gadget::calcMean(varPhenotypiceQTL) %sqrt(Gadget::calcVariance(varPhenotypiceQTL));
+    // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP heterozygosity across genes " %Gadget::calcMean(snp2pqeQTL) %sqrt(Gadget::calcVariance(snp2pqeQTL));
+    // LOGGER << boost::format("%60s %8.0f %8.0f\n") %"xQTL SNP average sample size across genes" %Gadget::calcMean(sampleSizeAcrossGene) %sqrt(Gadget::calcVariance(sampleSizeAcrossGene));
+    // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP size in non-mQTLs region" % numNonEqtl % 0;
+    // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP size in mQTLs region" % numEqtl % 0;
+    // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL average SNPs per molecular" % (double)(numEqtl/(double)numKeptGenes) % 0;
 }
 
 

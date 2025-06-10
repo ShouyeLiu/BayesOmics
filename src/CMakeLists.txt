@@ -47,6 +47,11 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/)
+###########
+
+# PLINK2.0 pgen library;
+INCLUDE_DIRECTORIES("submodule/plink-ng/2.0")
+INCLUDE_DIRECTORIES("submodule/plink-ng/2.0/simde")
 ##################################
 # Compile local library
 ##################################
@@ -61,6 +66,7 @@ target_link_libraries( ${CUR_LIB_NAME}
     Boost::filesystem
     # julia
     # ${JULIA_LIBRARY}
+    # Pgenlib
     OpenMP::OpenMP_CXX
     # ${OpenMP_CXX_FLAGS}
     ${CMAKE_THREAD_LIBS_INIT}

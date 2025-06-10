@@ -18,8 +18,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
 
 
-#ifndef gadgets_hpp
-#define gadgets_hpp
+#ifndef toolbox_hpp
+#define toolbox_hpp
 
 // #include <sys/time.h>
 #include <iostream>

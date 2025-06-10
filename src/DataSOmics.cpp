@@ -1270,6 +1270,99 @@ void Data::imputexQTLEffect(GeneInfo * &gene,GeneInfo * &geneBESD,map<string, Eq
 }
 
 
+//////////// Step 2.4 Build model matrix (5 functions)
+void Data::buildMMGeneEigen(const bool sampleOverlap, const double geneEigenCutoff, const bool noscale, bool haveEqtlInfo){
+    LOGGER  << "............................" << endl;
+    LOGGER << "Building xQTL various input parameters based on " << numKeptGenes << " genes with " << numIncdEqtls << " xQTLs ... " << endl;
+    LOGGER  << "............................" << endl;
+    // LOGGER << "Construct various gwas-eqtl-maps." << endl;
+    LOGGER << "Construct various maps to indicate the relationship among the complex trait, molecular expression, GWAS and xQTLs..." << endl;
+    ConstructGwasEqtlGeneMaps();
+    // calculate varPhenotypiceQTL and scale eQTL effect
+    // allele flip
+    LOGGER << "Scale xQTL effect size assuming unit expression phenotypic variance for each molecular(Jian Yang et.al. (2012))..." << endl;
+    scaleEqtlEffects(noscale);
+    // Construct Qgene based eigenValGene and eigenVecGene
+    LOGGER << "Construct corrected molecuar phenotype vector based on gene low-rank LD matrices (Lloyd-Jones, Zeng et.al. (2019))..." << endl;
+    UseGeneEigenMakeWAndQgene(geneEigenCutoff, pseudoGwasEffectTrn, pseudoGwasNtrn, false, false);
+    LOGGER  << "............................" << endl;
+    LOGGER << "Summary of model input parameters:" << endl;
+    LOGGER  << "............................" << endl;
+    LOGGER << boost::format("%60s %8s %8s\n") %"" %"Mean" %"SD";
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS SNP Phenotypic variance" %Gadget::calcMean(varySnp) %sqrt(Gadget::calcVariance(varySnp));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS SNP heterozygosity" %Gadget::calcMean(snp2pq) %sqrt(Gadget::calcVariance(snp2pq));
+    LOGGER << boost::format("%60s %8.0f %8.0f\n") %"GWAS SNP sample size" %Gadget::calcMean(n) %sqrt(Gadget::calcVariance(n));
+    LOGGER << boost::format("%60s %8.0f %8.0f\n") %"GWAS SNP allele flip number (ref: GWAS LD)" %numGWASFlip %0;
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS SNP effect (in genotype SD unit)" %Gadget::calcMean(b) %sqrt(Gadget::calcVariance(b));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS SNP SE" %Gadget::calcMean(se) %sqrt(Gadget::calcVariance(se));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS LD block size" %Gadget::calcMean(numSnpsBlock) %sqrt(Gadget::calcVariance(numSnpsBlock));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"GWAS block rank" %Gadget::calcMean(numEigenvalBlock) %sqrt(Gadget::calcVariance(numEigenvalBlock));
+    // xQTL info
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL Phenotypic variance" %Gadget::calcMean(varPhenotypiceQTL) %sqrt(Gadget::calcVariance(varPhenotypiceQTL));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP heterozygosity across genes " %Gadget::calcMean(snp2pqeQTL) %sqrt(Gadget::calcVariance(snp2pqeQTL));
+    LOGGER << boost::format("%60s %8.0f %8.0f\n") %"xQTL SNP average sample size across genes" %Gadget::calcMean(sampleSizeAcrossGene) %sqrt(Gadget::calcVariance(sampleSizeAcrossGene));
+    LOGGER << boost::format("%60s %8.0f %8.0f\n") %"xQTL SNP alllele flip number (ref: GWAS LD) " %numEqtlFlip % 0;
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP effect (in genotype SD unit)" %Gadget::calcMean(eQTLEffMeanAcrossGenes) %sqrt(Gadget::calcVariance(eQTLEffMeanAcrossGenes));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP SE" %Gadget::calcMean(eQTLEffSEMeanAcrossGenes) %sqrt(Gadget::calcVariance(eQTLEffSEMeanAcrossGenes));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP size in non-mQTLs region" % numNonEqtl % 0;
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP size in mQTLs region" % numEqtl % 0;
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP size in mQTLs region considering overlap" % numEqtlOverlap % 0;
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"Number of molecular traits " % numKeptGenes % 0;
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL average SNPs per molecular" % (double)(numEqtl/(double)numKeptGenes) % 0;
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL LD block size" %Gadget::calcMean(numSnpsInEigenAcrossGene) %sqrt(Gadget::calcVariance(numSnpsInEigenAcrossGene));
+    LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL block rank" %Gadget::calcMean(numEigenvalAcrossGene) %sqrt(Gadget::calcVariance(numEigenvalAcrossGene));
+    // release some memory
+        // Output header
+    std::unordered_map<int, int> frequency_distribution;
+    for (int i = 0; i < numIncdEqtls; i++) {
+        EqtlInfo * eqtl = incdEqtlInfoVec[i];
+        frequency_distribution[eqtl->eqtl2gene_count]++;
+    }
+   //////////////////////////////////////////////////
+
+    // Collect keys and sort them in ascending order
+    std::vector<int> sorted_keys;
+    for (const auto& pair : frequency_distribution) {
+        sorted_keys.push_back(pair.first);
+    }
+    std::sort(sorted_keys.begin(), sorted_keys.end());
+
+    // Split sorted keys into two columns
+    std::vector<int> column1_keys;
+    std::vector<int> column2_keys;
+    for (size_t i = 0; i < sorted_keys.size(); ++i) {
+        if (i % 2 == 0) {
+            column1_keys.push_back(sorted_keys[i]);
+        } else {
+            column2_keys.push_back(sorted_keys[i]);
+        }
+    }
+
+    // Output header
+    LOGGER << "|Overlap| count |\n";
+    LOGGER << "|-------|-------|\n";
+
+    // Output values for "overlap" and "count" in two columns
+    size_t max_rows = std::max(column1_keys.size(), column2_keys.size());
+    for (size_t i = 0; i < max_rows; ++i) {
+        if (i < column1_keys.size()) {
+            LOGGER << "| " << column1_keys[i] << "\t| " << frequency_distribution[column1_keys[i]] << "\t\t";
+        } else {
+            LOGGER << "\t\t\t\t";  // Empty space for alignment if column 1 has fewer items
+        }
+
+        if (i < column2_keys.size()) {
+            LOGGER << "| " << column2_keys[i] << "\t| " << frequency_distribution[column2_keys[i]];
+        }
+        LOGGER << "\n";
+    }
+
+///////////////////////////////////////////////////
+    LOGGER << "............................" << endl;
+    LOGGER << "Begin to model inference process..." << endl;
+    LOGGER  << "............................" << endl;
+}
+
 void Data::cleanUpUselessParameters(){
     eQTLEffMeanAcrossGenes.resize(0);
     sampleSizeAcrossGene.clear();
@@ -1277,6 +1370,148 @@ void Data::cleanUpUselessParameters(){
     eigenVecGene.clear();
     eigenValLdBlock.clear();
     eigenVecLdBlock.clear();
+}
+
+void Data::scaleEqtlEffects(const bool noscale){
+    EqtlInfo *eqtl;
+    GeneInfo *gene;
+    SnpInfo *snp;
+    map<string, EqtlInfo*>::iterator it;
+    ypyeQTL.resize(numKeptGenes);
+    varPhenotypiceQTL.resize(numKeptGenes);
+    snp2pqeQTL.resize(numKeptGenes);
+    scalingeQTLFactorVecVec.resize(numKeptGenes);
+    eQTLEffAcrossGenes.resize(numKeptGenes);
+    eQTLEffMeanAcrossGenes.resize(numKeptGenes);
+    eQTLEffSEMeanAcrossGenes.resize(numKeptGenes);
+    sampleSizeAcrossGene.clear();
+    double zscore = 0;
+    bool imputeSamBool;
+    // bool genotypeScale = false;
+    int lineIdx = 0;
+
+    for(unsigned j = 0; j < numKeptGenes; j++){
+        gene = keptGeneInfoVec[j];
+        VectorXd snp2pqTmp;         // 2pq of SNPs
+        VectorXd seTmp;             // se from eQTL summary data
+        VectorXd tssTmp;            // total ss (ypy) for every SNP
+        VectorXd bTmp;              // beta from eQTL summary data
+        VectorXd bTmpUnScale;
+        VectorXd zscore;
+        VectorXd nTmp;              // sample size for each SNP in eQTL
+        VectorXd nTmpEst;           // sample size for each SNP in eQTL
+        VectorXd DratioTmp;         // eQTL ZPZdiag over reference ZPZdiag for each SNP
+        VectorXd DratioSqrtTmp;     // square root of eQTL ZPZdiag over reference ZPZdiag for each SNP
+        VectorXd chisqTmp;          // eQTL chi square statistics = D*b^2
+        VectorXd DTmp;
+        VectorXd ypySrt;
+        imputeSamBool = false;
+        
+        int numIncdEqtlsInGene = gene->cisSnpNameVec.size();
+        gene->gwasMEffWithinGene.resize(numIncdEqtlsInGene);
+        snp2pqTmp.resize(numIncdEqtlsInGene);
+        snp2pqeQTL[j].resize(numIncdEqtlsInGene);
+        scalingeQTLFactorVecVec[j].resize(numIncdEqtlsInGene);
+        DTmp.resize(numIncdEqtlsInGene);
+        ZPy.resize(numIncdEqtlsInGene);
+        bTmp.resize(numIncdEqtlsInGene);
+        bTmpUnScale.resize(numIncdEqtlsInGene);
+        zscore.resize(numIncdEqtlsInGene);
+        nTmp.resize(numIncdEqtlsInGene);
+        nTmpEst.resize(numIncdEqtlsInGene);
+        seTmp.resize(numIncdEqtlsInGene);
+        tssTmp.resize(numIncdEqtlsInGene);
+        ypySrt.resize(numIncdEqtlsInGene);
+
+        // auto startTime = std::chrono::steady_clock::now();
+        for (unsigned i = 0; i < numIncdEqtlsInGene; i++){
+            // Gadget::showProgressBar(i, numIncdEqtlsInGene, startTime,"Scale xQTL effects");
+            double varpsPG=0,varpsDivid2pqPG = 0;
+            eqtl = eqtlInfoMap[gene->cisSnpNameVec[i]];
+            snp = snpInfoMap.find(eqtl->rsID)->second;
+            snp2pqTmp[i] = 2.0f * eqtl->af *(1.0 - eqtl->af);
+            snp2pqeQTL[j][i] = snp2pqTmp[i];
+            if(eqtl->af <= 0) LOGGER.e(0,"Allele frequency of eQTL SNP " + eqtl->rsID + " is negative ( af= " + std::to_string(eqtl->af) + ") ." );
+            if(snp2pqeQTL[j][i] == 0) LOGGER.e(0,"eQTL SNP " + eqtl->rsID + " af " + std::to_string( eqtl->af) + " has 2pq = 0.");
+            // flipped
+            if(eqtl->flipped){
+                gene->eQTLMarginEffect(i) = - gene->eQTLMarginEffect(i);
+            } else {
+
+            }
+            /////////////////////////////////////////////
+            /////// Sample issue
+            /////////////////////////////////////////////
+            nTmpEst[i] = -999;
+            // Way 1, using external gene sample size
+            if(gene->cisSnpSampleSizeMap.find(eqtl->rsID) != gene->cisSnpSampleSizeMap.end()){
+                nTmpEst[i] = gene->cisSnpSampleSizeMap.at(eqtl->rsID);
+            }else if(gene->sampleSize != -999){
+                eqtl->eqtl_n = gene->sampleSize;
+                nTmpEst[i]  = eqtl->eqtl_n;
+            }else{
+            // Way 2, using original eQTL sample size
+                if(eqtl->eqtl_n != -999 ) {
+                    nTmpEst[i]  = eqtl->eqtl_n;
+                }
+            }
+            if(nTmpEst[i] == -999){
+                imputeSamBool = true;
+                LOGGER << "In gene snp pair: " << gene->ensemblID + "-" + eqtl->rsID << endl;
+                LOGGER.e(0,"Impute per snp sample size...,but we need to add this function later.");
+            }
+            sampleSizeAcrossGene.push_back(nTmpEst[i]);
+            //////////////////////////////////////////
+            //// other parameters
+            //////////////////////////////////////////
+            DTmp[i] = nTmpEst[i] * snp2pqTmp[i];
+            bTmp[i]  = gene->eQTLMarginEffect(i);
+            seTmp[i] = gene->eQTLMarginEffectSE(i);
+            zscore[i] = bTmp[i]/seTmp[i];
+
+            //////////////////////////////////////
+            gene->gwasMEffWithinGene(i) = snp->gwas_b * snp->scaleFactor;
+            //////////////////////////////////////////
+            ///// Start to do scaling process
+            //////////////////////////////////////////
+            if(lineIdx == 0) LOGGER.w(0,"Assuming non-scaled xQTL effect and se is used. Please double-check it.");
+            // calculate scaling factor
+            scalingeQTLFactorVecVec[j][i] = sqrt(1/(nTmpEst[i]* seTmp[i]*seTmp[i] + bTmp[i]*bTmp[i]));
+            // if(false){
+                // varpsPG  = DTmp[i]* (nTmpEst[i] * seTmp[i]*seTmp[i] + bTmp[i] * bTmp[i] ) / nTmpEst[i];
+                // gene->eQTLMarginEffect(i)   = gene->eQTLMarginEffect(i) * sqrt(snp2pqeQTL[j][i]);
+                // gene->eQTLMarginEffectSE(i) = gene->eQTLMarginEffectSE(i) * sqrt(snp2pqeQTL[j][i]);
+                // ypySrt[i] = varpsPG;
+            // }
+            gene->eQTLMarginEffect(i)   = gene->eQTLMarginEffect(i) * (scalingeQTLFactorVecVec[j][i]);
+            gene->eQTLMarginEffectSE(i) = gene->eQTLMarginEffectSE(i) * (scalingeQTLFactorVecVec[j][i]);
+            ypySrt[i] = 1.0;
+
+
+            ///////////////////////////////////////////////
+            lineIdx ++;
+        }
+        /// Store eQTL marginal effect to sampling residuals
+        eQTLEffAcrossGenes[j] = gene->eQTLMarginEffect;
+        // 
+        eQTLEffMeanAcrossGenes[j] = Gadget::calcMean(gene->eQTLMarginEffect);
+        eQTLEffSEMeanAcrossGenes[j] = Gadget::calcMean(gene->eQTLMarginEffectSE);
+
+        if(imputeSamBool) nTmpEst.setConstant( estimateSamSize(gene->eQTLMarginEffect,gene->eQTLMarginEffectSE));
+        // Here we need to use median as per gene sample size
+        std::sort(nTmpEst.data(), nTmpEst.data() + nTmpEst.size());
+        nTmp.setConstant(nTmpEst[nTmpEst.size()/2]);  // median
+        VectorDat vectorDat = VectorDat(gene->cisSnpNameVec,nTmp);
+        neQTLVec.push_back(vectorDat);
+
+        // Estimate phenotypic variance of gene expression
+        // VectorXd ypySrt = nTmp.array()*( nTmp.array()*seTmp.array().square() + bTmp.array().square() );
+        // VectorXd ypySrt = (DTmp.array() ) *( nTmp.array()*seTmp.array().square()+bTmp.array().square() );
+        // ypySrt = ypySrt.array()/nTmp.array();        
+        varPhenotypiceQTL[j] = Gadget::findMedian(ypySrt);
+        // cout << "gene: " << gene->ensemblID << " vareQTL: " << varPhenotypiceQTL[j] << endl;
+    } // End of gene loop
+    // LOGGER << "test: " << endl;
 }
 
 long Data::estimateSamSize(VectorXd &beta,VectorXd &se)
@@ -1296,3 +1531,40 @@ long Data::estimateSamSize(VectorXd &beta,VectorXd &se)
     return sampleSize;
 }
 
+void Data::UseGeneEigenMakeWAndQgene(const double geneEigenCutoff, const vector<VectorXd> &GWASeffects, const double nGWAS, const bool noscale, const bool makePseudoSummary){
+    GeneInfo *gene;
+    VectorXd sqrtLambda;
+    wAcorr.resize(numKeptGenes);
+    wbcorrGene.resize(numKeptGenes);
+    QgeneDat.clear();
+
+    // do eigen  for each gene;
+    // geneID2IdxMap.clear();
+    eigenValGene.resize(numKeptGenes);
+    eigenVecGene.resize(numKeptGenes);
+    numSnpsInEigenAcrossGene.resize(numKeptGenes); 
+    numEigenvalAcrossGene.resize(numKeptGenes);
+
+    for(unsigned j = 0, geneIdx = 0;j < numGenes; j++){
+        gene = geneInfoVec[j];
+        if(!gene->kept) {
+            gene->eQTLMarginEffect.resize(0);
+            gene->eQTLMarginEffectSE.resize(0);
+            gene->cisSnpID2IdxMapInGene.clear();
+            continue;
+        }
+        // calculate wAcorr
+        sqrtLambda = eigenValGene[j].array().sqrt();
+        wAcorr[geneIdx] = (1.0/sqrtLambda.array()).matrix().asDiagonal() * (eigenVecGene[j].transpose() * gene->eQTLMarginEffect );
+        wbcorrGene[geneIdx] = (1.0/sqrtLambda.array()).matrix().asDiagonal() * (eigenVecGene[j].transpose() * gene->gwasMEffWithinGene );
+        // wbcorrGene[geneIdx].setZero(gene->eQTLMarginEffect.size());
+        MatrixXd tmpQgene = sqrtLambda.asDiagonal() * eigenVecGene[j].transpose();
+        MatrixDat matrixDat = MatrixDat(gene->cisSnpNameVec, tmpQgene);
+        QgeneDat.push_back(matrixDat);
+        numSnpsInEigenAcrossGene[geneIdx] = tmpQgene.cols();
+        numEigenvalAcrossGene[geneIdx] = tmpQgene.rows();
+        geneIdx ++;
+        if(geneIdx == numKeptGenes){ break;}
+    }
+}
+ 

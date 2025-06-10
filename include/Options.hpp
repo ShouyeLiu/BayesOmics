@@ -12,6 +12,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
 
 
+
 #ifndef PROGRAMOPTIONS_HPP
 #define PROGRAMOPTIONS_HPP
 
@@ -321,6 +322,33 @@ class Options
         excludeGeneFile = "";
         includeSpecificGeneID = "";
 
+        /// MCMC settings
+        mcmcType = "AIAO";
+        eieoLatentBool = false;
+        sampleVareBool = false;
+        sampleVarEpsBool = false;
+        numChains = 1 ;
+        chainLength = 20000;
+        burnin = 1000;
+        outputFreq = 100;
+        thin = 10;  // save every this th sampled value in MCMC
+        writeBinPosterior = false;
+        writeTxtPosterior = false;
+        outputResults = true; // output snpRes
+        mcmcSampleFile = "";
+
+        /// Bayesian-model settings
+        bayesType = "C";
+        pi = 0.05;
+        piAlpha = 1;
+        piBeta = 1;
+        piEffEqtl = 0.01;
+        piTheta = 0.05;
+        piEffNonEqtl = 0.01;
+        piGenicGwas = 0.01;
+        piGenicEqtl = 0.01;
+        heritability = 0.1;
+        cisHeritability = 0.1;
         propVarRandom = 0.05;  // proportion of variance explained by random covariate effects
         LDthreshold = 0.0;  // used to define the two ends of per-SNP LD window in the banded LD matrix
 
@@ -342,7 +370,20 @@ class Options
         pValueThreshold = 1.0;
         estimatePS = false;  // estimate population stratification in sbayes
 
-  
+        ndists                  = 5;
+        gamma.resize(ndists);
+        gamma                   << 0.0, 0.001, 0.01, 0.1, 1;
+        pis.resize(ndists);                      
+        pis                     << 0.95, 0.02, 0.01, 0.01, 0.01;
+
+        piEffEqtlVec.resize(ndists);                      
+        piEffEqtlVec                     << 0.95, 0.02, 0.01, 0.01, 0.01;
+
+        piEffNonEqtlVec.resize(ndists);                      
+        piEffNonEqtlVec                     << 0.95, 0.02, 0.01, 0.01, 0.01;
+        
+        piPar.setOnes(ndists);
+        
         estimatePi = true;
         estimateSigmaSq = true; // variance of SNP effects
         estimateScale = false;

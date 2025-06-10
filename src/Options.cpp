@@ -204,6 +204,39 @@ void Options::setThread(void){
       ("extract-snp-p", po::value <double> (), "Extract a subset of SNPs with p < a threshold.")
       ;
 
+      po::options_description bayesOption("MCMC options:");
+      bayesOption.add_options()
+      // MCMC settings
+      ("mcmc-type", po::value<string>(), "Specify AIAO or EIEO.")
+      ("eieo-latent", "Use latent variable or not to estimate gene effect.")
+      ("chain-length", po::value<int>(&chainLength),
+       "Specify the total number of iterations in MCMC, e.g. 5000 (default).")
+      ("burn-in", po::value<unsigned>(&burnin),
+       "Specify the number of iterations to be discarded, e.g. 4000 (default).")
+      ("out-freq", po::value<unsigned>(&outputFreq),
+       "Display the intermediate results for every 100 iterations (default).")
+      ("thin", po::value<unsigned>(&thin),
+       "Output the sampled values for SNP effects and genetic architecture parameters for every 10 iterations (default)."
+       "Only non-zero sampled values of SNP effects are written into a binary file.")
+      ("no-mcmc-bin", "Suppress the output of MCMC samples of SNP effects.")
+      ("write-mcmc-txt", "output of MCMC samples of SNP effects in txt format.")
+      ("unscale-genotype","")
+      ("vare-sbrc","choose suitable residuals")
+
+      // Bayes model settings
+      ("bayes", po::value<string>(&bayesType), "Specify individual-level bayes model.")
+      ("sbayes", po::value<string>(&bayesType), "Specify summary-level bayes model.")
+      ("pi", po::value <string> (), "Starting value for the sampling.")
+      ("pi-intergenic", po::value <string> (), "Starting value for the sampling of pi for the AIAO model in inter-genic region.")
+      ("pi-genic", po::value <string> (), "Starting value for the sampling of pi for genic region.")
+      ("pi-genic-gwas", po::value <string> (), "Starting value for the sampling of pi for the complex trait in EIEO model in in genic region.")
+      ("pi-genic-xqtl", po::value <string> (), "Starting value for the sampling of pi for the molecular trait in the EIEO model in the genic region.")
+      ("gamma", po::value <string> (), "When BayesR is used, this speficies the gamma values seperated by comma, each representing the scaling factor for the variance of a mixture component. Note that the number of values should match that in --pi.")
+      ("hsq", po::value <double> (&heritability), "total gwas snp heritability")
+      ("hsq-cis", po::value <double> (&cisHeritability), "cis-region heritability")
+      ("cis-wind", po::value <double> (), "defines a window centred around the probe to select cis-eQTLs (passing a p-value threshold) for the SMR analysis. The default value is 1Mb.")
+      ;
+
     po::options_description additional("Additional options:");
     additional.add_options()
       // error-checking
@@ -220,10 +253,10 @@ void Options::setThread(void){
     ///////////////////////////////////////////////////////////////////
     // Step2: combine mentioned options
     po::options_description visible("Options");
-    visible.add(typical).add(indLevel).add(sumLevel).add(additional);
+    visible.add(typical).add(indLevel).add(sumLevel).add(bayesOption).add(additional);
 
     po::options_description all("All options");
-    all.add(typical).add(indLevel).add(sumLevel).add(additional).add(hidden);
+    all.add(typical).add(indLevel).add(sumLevel).add(bayesOption).add(additional).add(hidden);
     all.add_options()
       ("bad-args", po::value< vector <string> >(), "bad args")
       ;
@@ -252,6 +285,7 @@ void Options::setThread(void){
 	        LOGGER << typical << endl;
           LOGGER << indLevel << endl;
           LOGGER << sumLevel << endl;
+          LOGGER << bayesOption << endl;
         exit(0);
       }
       po::notify(vm);  // throws an error if there are any problems
@@ -478,7 +512,140 @@ void Options::setThread(void){
         std::sort(geneEigenCutoff.data(), geneEigenCutoff.data() + geneEigenCutoff.size());
       }
 
+      /// MCMC settings
+      if(vm.count("unscale-genotype")){
+        noscale = true;
+      }
+      
+      if(vm.count("mcmc-type")){
+        string mcmcTypeTmp = vm["mcmc-type"].as<string>();
+        mcmcType.resize(mcmcTypeTmp.size());
+        std::transform(mcmcTypeTmp.begin(), mcmcTypeTmp.end(), mcmcType.begin(), ::toupper);
+      }
 
+      if(vm.count("eieo-latent")){
+        eieoLatentBool = true;
+      }
+
+      if(vm.count("vare-sbrc")){
+        sampleVareBool = true;
+      }
+      if(vm.count("sampleVarEps")){
+        sampleVarEpsBool = true;
+      }
+
+        if(vm.count("gamma")){
+        Gadget::Tokenizer strvec;
+        strvec.getTokens(vm["gamma"].as<string>(), " ,");
+        gamma.resize(strvec.size());
+        for (unsigned j=0; j<strvec.size(); ++j) {
+          gamma[j] = stod(strvec[j]);
+        }
+        ndists = gamma.size();
+        piPar.setOnes(ndists);
+        // LOGGER << "Gamma value: " << gamma << endl;
+        if (strvec.size() != pis.size() ){
+          // LOGGER.e(0,"The number of values should match that in --pi.");
+        }
+      }
+
+      if(vm.count("pi")){
+        Gadget::Tokenizer strvec;
+        strvec.getTokens(vm["pi"].as<string>(), " ,");
+        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+          // LOGGER.e(0,"When NOT using Bayes R or RO, its variants option you can only specify one mixture proportion parameter.");
+          }
+        if (strvec.size() == 1) {
+          for (unsigned j=0; j<strvec.size(); ++j) pi = stod(strvec[j]);
+        } else {
+          pis.resize(strvec.size());
+          for (unsigned j=0; j<strvec.size(); ++j) pis[j] = stod(strvec[j]);
+        }
+        if(bayesType == "R" && bayesType == "RO"){
+          if(ndists != pis.size()){LOGGER.e(0, "The number of pis should be consistent with that of gamma. Please check inputs of --gamma and --pi.");}
+        }
+      }
+      ////////////////////////////////////////////////////////////////////////////
+      // for intergenic region 
+      if(vm.count("pi-intergenic")){
+        Gadget::Tokenizer strvec;
+        strvec.getTokens(vm["pi-intergenic"].as<string>(), " ,");
+        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+          // LOGGER.e(0,"When NOT using Bayes R or OR, its variants option you can only specify one mixture proportion parameter.");
+          }
+        if (strvec.size() == 1) {
+          for (unsigned j=0; j<strvec.size(); ++j) piEffNonEqtl = stod(strvec[j]);
+        } else {
+          piEffNonEqtlVec.resize(strvec.size());
+          for (unsigned j=0; j<strvec.size(); ++j) piEffNonEqtlVec[j] = stod(strvec[j]);
+        }
+        if(bayesType == "RO"){
+          if(piEffNonEqtlVec.sum() -1 > 1e-6 ){ LOGGER.e(0,"The sum of piEffNonEqtlVec (" + to_string(piEffNonEqtlVec.sum()) + ") should be equal to 1. Please check the input of --pi-intergenic .");}
+          if(ndists != piEffNonEqtlVec.size()){
+            LOGGER << "gamma value: " << ""; for(int i = 0; i < gamma.size(); ++i) {LOGGER << gamma(i) << " ";} LOGGER << endl;
+            LOGGER << "piEffNonEqtl value: " << ""; for(int i = 0; i < piEffNonEqtlVec.size(); ++i) {LOGGER << piEffNonEqtlVec(i) << " ";} LOGGER << endl;
+            LOGGER.e(0, "The number of piEffNonEqtlVec values should be consistent with that of gamma. Please check inputs of --gamma and --pi-intergenic.");
+          }
+        }
+      }
+
+
+      ////////////////////////////////////////////////////////////////////////////
+      // for EIEO model
+      if(vm.count("pi-genic-gwas")){
+        Gadget::Tokenizer strvec;
+        strvec.getTokens(vm["pi-genic-gwas"].as<string>(), " ,");
+        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+          // LOGGER.e(0,"When NOT using Bayes R or OR, its variants option you can only specify one mixture proportion parameter.");
+          }
+        if (strvec.size() == 1) {
+          for (unsigned j=0; j<strvec.size(); ++j) piGenicGwas = stod(strvec[j]);
+        } 
+      }
+      if(vm.count("pi-genic-xqtl")){
+        Gadget::Tokenizer strvec;
+        strvec.getTokens(vm["pi-genic-xqtl"].as<string>(), " ,");
+        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+          // LOGGER.e(0,"When NOT using Bayes R or OR, its variants option you can only specify one mixture proportion parameter.");
+          }
+        if (strvec.size() == 1) {
+          for (unsigned j=0; j<strvec.size(); ++j) piGenicEqtl = stod(strvec[j]);
+        } 
+      }
+
+      // for AIAO model 
+      if(vm.count("pi-genic")){
+        Gadget::Tokenizer strvec;
+        strvec.getTokens(vm["pi-genic"].as<string>(), " ,");
+        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+          // LOGGER.e(0,"When NOT using Bayes R or RO, its variants option you can only specify one mixture proportion parameter.");
+          }
+        if (strvec.size() == 1) {
+          for (unsigned j=0; j<strvec.size(); ++j) piEffEqtl = stod(strvec[j]);
+        } else {
+          piEffEqtlVec.resize(strvec.size());
+          for (unsigned j=0; j<strvec.size(); ++j) piEffEqtlVec[j] = stod(strvec[j]);
+        }
+        if(bayesType == "RO"){
+          if(piEffEqtlVec.sum() - 1 > 1e-6){ LOGGER.e(0,"The sum of piEffEqtlVec (" + to_string(piEffEqtlVec.sum()) + ") should be equal to 1. Please check the input of --pi-genic .");}
+          if(ndists != piEffEqtlVec.size()){
+            LOGGER << "gamma value: " << ""; for(int i = 0; i < gamma.size(); ++i) {LOGGER << gamma(i) << " ";} LOGGER << endl;
+            LOGGER << "piEffEqtl value: " << ""; for(int i = 0; i < piEffEqtlVec.size(); ++i) {LOGGER << piEffEqtlVec(i) << " ";} LOGGER << endl;
+            LOGGER.e(0, "The number of piEffEqtlVec values should be consistent with that of gamma. Please check inputs of --gamma and --pi-genic .");
+            }
+        }
+      }
+
+      ///  Bayesian model settings
+      if(vm.count("bayes")) {
+        analysisType = "Bayes";
+      }
+      if(vm.count("sbayes")) {
+        analysisType = "SBayes";
+      }
+      if(vm.count("rsid")){
+        analysisType = "DataManagement";
+      }
 
       setThread();
 

@@ -9,6 +9,7 @@ configure/bin/*
 # Build files:
 Debug
 Release
+tests/
 
 debug/
 release/

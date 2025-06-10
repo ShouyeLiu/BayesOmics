@@ -20,8 +20,6 @@ option(GOOGLE_BENCH     "Build benchmarks" OFF)
 option(LIB_STATIC    "Builds a static library instead of a shared one" OFF)
 option(IS_SANITIZE  "Adds sanitive flags" OFF)
 
-
-
 if(LIB_STATIC)
   set(CUR_LIB_NAME ${targetName}) ## current library name
   set(CUR_LIB_TYPE STATIC)
@@ -52,6 +50,11 @@ if(IS_SANITIZE)
 endif()
 
 add_subdirectory(src)
+
+if(GOOGLE_TEST)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
 
 if(GOOGLE_BENCH)
   add_subdirectory(bench)

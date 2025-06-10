@@ -23,8 +23,14 @@
 
 #include "Data.hpp"
 #include "Options.hpp"
+#include "Model.hpp"
+#include "Mcmc.hpp"
 #include "Logger.hpp"
 #include "Gadgets.hpp"
+#include "ModelBayesCO.hpp"
+#include "ModelSBayesCO.hpp"
+#include "ModelBayesRO.hpp"
+#include "ModelSBayesRO.hpp"
 
 
 class Omics {
@@ -41,13 +47,23 @@ public:
     void inputSnpInfo(Data &data, const string &bedFile, const string &geneInfoFile,const double cisRegionWind, const string &includeSnpFile, const string &excludeSnpFile, const string &excludeRegionFile,
                       const unsigned includeChr, const bool excludeAmbiguousSNP, const string &skeletonSnpFile, const string &geneticMapFile, const string &ldBlockInfoFile, const unsigned includeBlock,
                       const unsigned flank, const double mafmin, const double mafmax, const bool noscale, const bool readGenotypes);
-    
-    // void inputSnpInfo(Data &data, const string &bedFile, const string &gwasSummaryFile, const double afDiff, const double mafmin, const double mafmax, const double pValueThreshold, const bool sampleOverlap, const bool imputeN, const bool noscale);
    
     void inputSnpInfo(Data &data, const string &includeSnpFile, const string &excludeSnpFile, const string &excludeRegionFile,
-                        const string &gwasSummaryFile, const string &ldmatrixFile, const unsigned includeChr, const bool excludeAmbiguousSNP,
-                        const string &skeletonSnpFile, const string &geneticMapFile, const double genMapN, const unsigned flank, const string &eQTLFile, const string &ldscoreFile, const string &windowFile,
-                        const bool multiLDmatrix, const bool excludeMHC, const double afDiff, const double mafmin, const double mafmax, const double pValueThreshold, const double rsqThreshold, const bool sampleOverlap, const bool imputeN, const bool noscale, const bool binSnp, const bool readLDMfromTxtFile);
+                      const string &gwasSummaryFile, const string &ldmatrixFile, const unsigned includeChr, const bool excludeAmbiguousSNP,
+                      const string &skeletonSnpFile, const string &geneticMapFile, const double genMapN, const unsigned flank, const string &eQTLFile, const string &ldscoreFile, const string &windowFile,
+                      const bool multiLDmatrix, const bool excludeMHC, const double afDiff, const double mafmin, const double mafmax, const double pValueThreshold, const double rsqThreshold, const bool sampleOverlap, const bool imputeN, const bool noscale, const bool binSnp, const bool readLDMfromTxtFile);
+    // this function read eigen matrices
+    void inputSnpInfo(Data &data, const string &includeSnpFile, const string &excludeSnpFile, const string &excludeRegionFile,
+                            const string &gwasSummaryFile,const string &eqtlSummaryFile, const string &eqtlSummaryQueryFile,
+                            const string &includeGeneFile,const string &geneSamSizeFile, const string &eigenMatrixFile, 
+                            const string &geneEigenMatrixFile, const string &ldBlockInfoFile,
+                            const unsigned includeChr, const bool excludeAmbiguousSNP, const unsigned flank, const string &eQTLFile, const string &ldscoreFile,
+                            const double eigenCutoff, const double geneEigenCutoff, const bool excludeMHC,
+                            const double afDiff, const double mafmin, const double mafmax, const double pValueThreshold, const double rsqThreshold,
+                            const bool sampleOverlap, const bool imputeN, const bool noscale, const bool readLDMfromTxtFile, const bool imputeSummary, 
+                            const unsigned includeBlock,const string includeBlockID);
+    
+    void truncBlockEigen(double cutShresh=1e-6);
 
     void covertUkbPppPGWASToBesdFormat(Data &data, const string rsidMapFiles, const string proteinMapFile, const string proteinPath,
         const bool &makeBesdBool,const bool &makeBesdSmrBool,const bool &makeQueryBool,const bool &makeSumstatsFormatBool,const bool &makeQueryCojoMaBool,
@@ -68,10 +84,33 @@ public:
     const string besdFile,const string title,const string &includeGeneFile,const string specificGeneID,
     const int reSamType, const bool makeQueryCojoMaBool, 
     const bool makeXqtlNBool, const int reEffectSampleSize, const int slurmArrayLimit, const double eigenCutoff);
+    
+    // tune for eigen matrix cutoff in LD Block
+    double tuneEigenCutoff(Data &data, const Options &opt);
+    // tune for eigen matrix cutoff in gene region
+    double tuneGeneEigenCutoff(Data &data, const Options &opt);
 
     void inputSnpInfo(Data &data, const string &bedFile, const string &gwasSummaryFile, const double afDiff, const double mafmin, const double mafmax, const double pValueThreshold, const bool sampleOverlap, const bool imputeN, const bool noscale);
 
+    Model* buildModel(Data &data, const string &bedFile, const string &gwasFile, const bool &haveXqtlDataBool, const string &bayesType,const string mcmcType, 
+                const bool eieoLatent, const bool sampleVareBool, const bool sampleVarEpsBool,
+                const unsigned windowWidth, const double heritability, const double cisHeritability, const double propVarRandom, 
+                const double pi, const double piEffEqtl,const double piGenicGwas,const double piGenicEqtl,
+                const double piEffNonEqtl,const VectorXd &piEffEqtlVec,const VectorXd &piEffNonEqtlVec, 
+                const double piTheta,const double piAlpha,const double piBeta, const bool estimatePi, const bool noscale,
+                const VectorXd &pis, const VectorXd &piPar, const VectorXd &gamma,const bool estimateSigmaSq,const double phi, 
+                const string &algorithm, const double overdispersion,
+                const bool estimatePS,const double icrsq, const double spouseCorrelation, const bool diagnosticMode, 
+                const bool originalModel, const bool perSnpGV, const bool robustMode);
+
+    vector<McmcSamples*> runMcmc(Model &model, const unsigned chainLength, const unsigned burnin, const unsigned thin, const unsigned outputFreq, const string &title, const bool writeBinPosterior, const bool writeTxtPosterior);
+    void saveMcmcSamples(const vector<McmcSamples*> &mcmcSampleVec, const string &filename);
+    void outputResults(const Data &data, const vector<McmcSamples*> &mcmcSampleVec, const string &bayesType,const string &mcmcType, const bool noscale, const string &filename);
+    void outputPartitionedSnpResults(const Data &data,const vector<McmcSamples*> &mcmcSampleVec,const string &mcmcType,const bool noscale, const string &filename);
+    void outputGeneParameter(const Data &data,const vector<McmcSamples*> &mcmcSampleVec,const string &mcmcType,const string &filename);
+    McmcSamples* inputMcmcSamples(const string &mcmcSampleFile, const string &label, const string &fileformat);
     void clearGenotypes(Data &data);
+    void pip2p(const Data &data, const VectorXd &pip, const double propNull, VectorXd &pval);
 
 };
 

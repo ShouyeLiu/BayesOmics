@@ -3,6 +3,12 @@
 // This file is part of BayesOmics, a statistical genetics software package
 // developed by Shouye Liu.
 //
+// Portions of this file are adapted from GCTB,
+// originally licensed under the MIT License. See below for the original license.
+//
+// Original source: https://cnsgenomics.com/software/gctb/#Download (accessed 20 June 2024)
+//
+// Modifications and additional code:
 // Copyright (C) 2025 Shouye Liu <syliu.xue@foxmail.com>
 //
 // This file is licensed under the GNU General Public License v3.0 or (at your option)
@@ -42,7 +48,7 @@
 #define FNAMESIZE 4096
 #define SNPMISSRATE 0.3
 #define MIN_PVAL_ADJUSTED 1e-150
-#define BayesOmics_VERSION "v0.0.1"
+#define BayesOmics_VERSION "v1.0.0"
 #define MISSING_XQTL_RATE_PER_GENE  0.3
 // Define a macro for the time zone
 #define TIME_ZONE "AEST" // Australian Eastern Standard Time

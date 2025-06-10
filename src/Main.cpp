@@ -127,6 +127,51 @@ int main(int argc, char *argv[]){
             if(opt.mergeEigenGeneBool) data.mergeMultiEigenMat(opt.title,opt.geneListFile,"gene",opt.eigenCutoff.maxCoeff());
             
         } // end of DataManagement
+        else if (opt.analysisType == "Bayes") {
+            /***** Step 1. read individual infomation *****/
+            readGenotypes = false;
+            omics.inputIndInfo(data, opt.bedFile, opt.phenotypeFile, opt.keepIndFile, 
+            opt.keepIndMax,opt.mphen, opt.covariateFile, opt.randomCovariateFile, 
+            opt.residualDiagFile, opt.geneInfoFile,opt.keepIndGeneFile,opt.subGenePath);
+
+            /***** Step 2. read snp infomation *****/
+            omics.inputSnpInfo(data, opt.bedFile,opt.geneInfoFile,opt.cisRegionWind, 
+            opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, opt.includeChr, 
+            opt.excludeAmbiguousSNP, opt.skeletonSnpFile, opt.geneticMapFile, opt.ldBlockInfoFile, 
+            opt.includeBlock, opt.flank, opt.mafmin, opt.mafmax, opt.noscale, readGenotypes);
+
+            if(opt.diagnosticMode || opt.dataMode) {
+                data.readBedFile(opt.noscale, opt.bedFile + ".bed");
+                // data.readBedFile(noscale, bedFile + ".bed");
+                if ( !opt.geneInfoFile.empty()){
+                    data.buildBayesOmicsMME(opt.bedFile + ".bed",opt.noscale,true);
+                } else {
+                    data.buildBayesOmicsMME(opt.bedFile + ".bed", opt.noscale,false);
+                }
+                if(opt.dataMode){
+                    data.extractParameterFromIndModel(opt.title);
+                    LOGGER << "Generate formatted dataset." << endl;
+                    exit(0);
+                } 
+                LOGGER << " The software is in debug mode. Exit now." << endl;
+            }
+            /***** Step 3. build model *****/
+            Model *model = omics.buildModel(data, opt.bedFile, "", opt.haveXqtlDataBool, opt.bayesType,
+                        opt.mcmcType, opt.eieoLatentBool,opt.sampleVareBool,opt.sampleVarEpsBool, opt.windowWidth, opt.heritability,opt.cisHeritability, 
+                        opt.propVarRandom, opt.pi,opt.piEffEqtl,opt.piGenicGwas,opt.piGenicEqtl,opt.piEffNonEqtl,opt.piEffEqtlVec,opt.piEffNonEqtlVec, opt.piTheta, opt.piAlpha, 
+                        opt.piBeta, opt.estimatePi, opt.noscale, opt.pis, opt.piPar, opt.gamma, opt.estimateSigmaSq,
+                        opt.phi,opt.algorithm,  opt.overdispersion, opt.estimatePS, opt.icrsq, opt.spouseCorrelation,
+                        opt.diagnosticMode, opt.originalModel, opt.perSnpGV, opt.robustMode);
+
+            /***** Step 4. Perform gibbs sampling process *****/
+            vector<McmcSamples*> mcmcSampleVec = omics.runMcmc(*model, opt.chainLength, opt.burnin, opt.thin,
+            opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
+            omics.saveMcmcSamples(mcmcSampleVec, opt.title);
+            omics.clearGenotypes(data);
+
+            /***** Step 5. Summary results *****/
+            if (opt.outputResults) omics.outputResults(data, mcmcSampleVec, opt.bayesType, opt.mcmcType,opt.noscale, opt.title);
+        } // end of analysisType: Bayes
         else if (opt.analysisType == "LDmatrix") {
             readGenotypes = false;
             if (opt.ldmatrixFile.empty()) { // make LD matrix from genotypes
@@ -211,11 +256,67 @@ int main(int argc, char *argv[]){
                 LOGGER.e(0,"Something is wrong dur generating or merging low-rank LD process. \nPlease see (" + string(DOC_ONLINE) + ") for details.");
             }
         } // end of analysisType: LDmatrixEigen
+        else if (opt.analysisType == "ImputeSumStats") {
+            readGenotypes = false;
+            if (opt.eigenMatrixFile.empty()) {
+                LOGGER.e(0," --impute-summary requires the results of eigen-decomposition of LD matrices as input.");
+            }
+            omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,
+                              opt.gwasSummaryFile,opt.eqtlSummaryFile,opt.eqtlSummaryQueryFile,opt.includeGeneFile, opt.geneSamSizeFile, opt.eigenMatrixFile,opt.geneEigenMatrixFile, opt.ldBlockInfoFile,
+                              opt.includeChr, opt.excludeAmbiguousSNP, opt.flank, opt.eQTLFile, opt.ldscoreFile,
+                              opt.eigenCutoff.maxCoeff(), opt.geneEigenCutoff.maxCoeff(), opt.excludeMHC,
+                              opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
+                              opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary,
+                              opt.includeBlock, opt.includeBlockID);
+        } // end of analysisType: ImputeSumStats
         else if (opt.analysisType == "MergeGwasSummary") {
             if (opt.outLDmatType == "block") {
                 data.mergeBlockGwasSummary(opt.gwasSummaryFile, opt.title);
             }
         } // end of analysisType: MergeGwasSummary
+        else if (opt.analysisType == "SBayes") {
+            if (!opt.ldmatrixFile.empty()) {
+                omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, opt.gwasSummaryFile, opt.ldmatrixFile, opt.includeChr, opt.excludeAmbiguousSNP, opt.skeletonSnpFile, opt.geneticMapFile, opt.genMapN, opt.flank, opt.eQTLFile, opt.ldscoreFile, opt.windowFile, opt.multiLDmat, opt.excludeMHC, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale, opt.binSnp, opt.readLdmTxt);
+            } else if (!opt.eigenMatrixFile.empty()) {  
+                // use  low-rank model of LD block for gwas analysis
+                omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,
+                                  opt.gwasSummaryFile, opt.eqtlSummaryFile, opt.eqtlSummaryQueryFile, opt.includeGeneFile,opt.geneSamSizeFile, opt.eigenMatrixFile, opt.geneEigenMatrixFile, opt.ldBlockInfoFile,
+                                  opt.includeChr, opt.excludeAmbiguousSNP, opt.flank, opt.eQTLFile, opt.ldscoreFile,
+                                  opt.eigenCutoff.maxCoeff(), opt.geneEigenCutoff.maxCoeff(), opt.excludeMHC,
+                                  opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
+                                  opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, 
+                                  opt.includeBlock,opt.includeBlockID);
+                // Tune process for best eigen cutoff in LD matrix
+                // double bestEigenCutoff = omics.tuneEigenCutoff(data, opt);
+                if (!opt.geneEigenMatrixFile.empty()){ // use eigen matrix for gene region
+                    LOGGER << "Tune process based on gene eigen matrix should be used here, but ignore now!" << endl;
+                    // double bestEigenCutoff = omics.tuneGeneEigenCutoff(data, opt);
+                    // data.UseGeneEigenMakeWAndQgene(bestEigenCutoff, data.gwasEffectInBlock, data.numKeptInds, opt.noscale, true);
+                }
+            } else  {
+                omics.inputSnpInfo(data, opt.bedFile, opt.gwasSummaryFile, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale);
+            }
+            // debug mode
+            // if(opt.diagnosticMode || opt.dataMode) {
+            if( opt.dataMode) {
+                LOGGER << " The software is in debug mode for summary-level model." << endl;
+                data.extractParameterFromSumModel(opt.title);
+                if(opt.dataMode) exit(0);
+                exit(0);
+            }
+            data.cleanUpUselessParameters();
+            data.label = opt.title;    
+            Model *model = omics.buildModel(data, opt.bedFile, opt.gwasSummaryFile,opt.haveXqtlDataBool, opt.bayesType,opt.mcmcType,
+                                opt.eieoLatentBool,opt.sampleVareBool,opt.sampleVarEpsBool, opt.windowWidth,opt.heritability,opt.cisHeritability,
+                                opt.propVarRandom, opt.pi,opt.piEffEqtl,opt.piGenicGwas,opt.piGenicEqtl,opt.piEffNonEqtl,
+                                opt.piEffEqtlVec,opt.piEffNonEqtlVec,opt.piTheta,opt.piAlpha, opt.piBeta, opt.estimatePi, opt.noscale, opt.pis, opt.piPar, 
+                                opt.gamma, opt.estimateSigmaSq,opt.phi,opt.algorithm,  opt.overdispersion, opt.estimatePS, opt.icrsq, opt.spouseCorrelation,
+                                opt.diagnosticMode, opt.originalModel, opt.perSnpGV, opt.robustMode);
+
+            vector<McmcSamples*> mcmcSampleVec;
+            mcmcSampleVec = omics.runMcmc(*model, opt.chainLength, opt.burnin, opt.thin, opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
+            if (opt.outputResults) omics.outputResults(data, mcmcSampleVec, opt.bayesType,opt.mcmcType, opt.noscale, opt.title);
+        } // end of analysisType: SBayes
         else {
             LOGGER.e(0,"Wrong analysis type: " + opt.analysisType, "");
         } // end of analysisType

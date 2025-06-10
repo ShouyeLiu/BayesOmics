@@ -17,7 +17,6 @@
 // BayesOmics is distributed WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file for details.
 
-
 #ifndef data_hpp
 #define data_hpp
 #include <complex>
@@ -891,6 +890,7 @@ public:
     void ConstructGwasEqtlGeneMaps();
     void ConstructGenePheAndwAcorr();
     void buildBayesOmicsMME(const string bedFile, const bool noscale, const bool haveGene);
+    void buildMME(const bool noscale,bool haveEqtlInfo );
 
     ///////////// data management begin ///////////
     void readSNPRSIDMaps(const string snpRsidMapFile, const string grchType,const string title);
@@ -965,6 +965,12 @@ public:
     bool readMultiEigenMatBinFile(const string title, vector<GeneInfo*> &geneInfoVecLD,map<string, GeneInfo *> &geneInfoMapLD,vector<EqtlInfo*> &eqtlInfoVecLD,map<string, EqtlInfo *> eqtlInfoMapLD, float eigenCutoff);
     long estimateSamSize(VectorXd &beta,VectorXd &se);
     double adjeQTLSE(double beta,double p);
+
+    //////////// Step 2.4 Build multiple maps
+    void buildMMGeneEigen(const bool sampleOverlap, const double geneEigenCutoff, const bool noscale, bool haveEqtlInfo); // for eigen decomposition
+    //////////// Step 2.5 build model matrix
+    void scaleEqtlEffects(const bool noscale);
+    void UseGeneEigenMakeWAndQgene(const double geneEigenCutoff, const vector<VectorXd> &GWASeffects, const double nGWAS, const bool noscale, const bool makePseudoSummary);
 
     /////////////////////////////////////////////
     ///////////      debug mode     /////////////
