@@ -260,6 +260,8 @@ public:
     bool skeleton;  // skeleton snp for sbayes
     bool flipped;   // A1 A2 alleles are flipped in between gwas and LD ref samples
     bool isInLD;
+    bool inCS;
+    bool skip;  // skip sampling its effect
     long sampleSize;
     
     string block;
@@ -316,6 +318,8 @@ public:
         skeleton = false;
         flipped = false;
         isInLD = false;
+        inCS = false;
+        skip = false;
         sampleSize = 0;
         effect = 0;
         gwas_b  = -999;
