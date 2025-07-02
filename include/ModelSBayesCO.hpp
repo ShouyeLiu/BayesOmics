@@ -55,43 +55,6 @@ class ApproxBayesCO : public ApproxBayesC {
         numGenes(int(geneNames.size())){   
         }
     };
-    class DeltaMat : public vector<ParamMat*> {
-        public:
-        vector<string> geneNames;
-        vector<string> snpNames;
-        unsigned numGenes;
-        unsigned numSnps;
-        unsigned numTraits;
-        DeltaMat(const vector<string> &snpNames,
-        const vector<string> &geneNames,
-        const unsigned &numTraits,
-        const string &lab = "DeltaMat"):
-        numTraits(numTraits), 
-        numSnps(int(snpNames.size())),
-        numGenes(int(geneNames.size())){   
-            for(unsigned i = 0; i < numTraits; ++i){
-                this->push_back(new ParamMat(lab,snpNames,geneNames));
-            }  
-        }
-    };
-    
-    class DeltaVec : public vector<ParamSet*> {
-        public:
-        vector<string> colnames;
-        vector<string> geneNames;
-        unsigned numGenes;
-        map<int, vector<string>> gene2cisSnpIDMap;
-        DeltaVec(const vector<string> &geneNames,
-        const  map<int, vector<string>> &gene2cisSnpIDMap,
-        const string &lab = "DeltaVec"):
-        numGenes(int(geneNames.size())),geneNames(geneNames),gene2cisSnpIDMap(gene2cisSnpIDMap){   
-            colnames.resize(numGenes);
-            for(unsigned i = 0; i< numGenes; i++){
-                colnames[i] = lab + geneNames[i];
-                 this->push_back(new ParamSet(colnames[i], gene2cisSnpIDMap.at(i)));
-            }
-        }
-    };
 
     class EQTLJointVec : public vector<ParamSet*> {
         public:
@@ -346,8 +309,6 @@ class ApproxBayesCO : public ApproxBayesC {
         void setPrior(const double &gwasVare, const VectorXd &varEps);
        // VectorXd compute
     };
-     
-   
     class SnpEffects : public ApproxBayesC::SnpEffects, public Stat::MultiNormal {
     public:
         VectorXd betaTotal;     // save sample squres of full conditional normal distribution regardless of delta values
@@ -381,6 +342,7 @@ class ApproxBayesCO : public ApproxBayesC {
         VectorXd ssqAlphaEqtlPG; // ssq for alpha per gene
         VectorXd ssqBetaEqtlPG;
 
+
         VectorXd betaTotalMean; // debug
         // calculate heritability directly
         VectorXd ghat;  // used to calculate total snp heritability
@@ -395,12 +357,13 @@ class ApproxBayesCO : public ApproxBayesC {
             ssqBetaEqtl = 0;
             ssqAlphaEqtl = 0;
             ssqBetaTotalGenic = 0;
+            badSnps.setZero(size);
 
         }                                          
         void sampleFromFCAIAO(Data data, const vector<MatrixXd> &QblocksMat, const int iter,const bool diagnose, const string title,
                 vector <VectorXd> &wcorrBlocks, vector<VectorXd> &wAcorr,vector<VectorXd> &wbcorrGene,
                 const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, 
-                const map<int,vector<int> > &ldblock2gwasSnpMap, DeltaVec deltaVecGWAS,
+                const map<int,vector<int> > &ldblock2gwasSnpMap,
                 SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec,
                 const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
                 const map<string, int> &cisSnpID2IdxMap, const double &sigmaSqBetaNonEqtl,  SigmaSqMat &sigmaSqMats,SigmaSqMatResidual &sigmaSqMatRes, const double &piEffEqtl, const double &piEffNonEqtl,
@@ -408,7 +371,6 @@ class ApproxBayesCO : public ApproxBayesC {
 
         void sampleFromFCEIEO(Data data,const vector<MatrixXd> &QblocksMat,const int iter,const bool diagnose, const string title, vector <VectorXd> &wcorrBlocks, 
                 vector<VectorXd> &wAcorr, const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, const map<int,vector<int> > &ldblock2gwasSnpMap, 
-                DeltaVec deltaVecGWAS,DeltaVec deltaVecEQTL,
                 SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, SnpEffectVec &snpEffectVecLatent, EQTLJointVec &eQTLJointVecLatent,
                 const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
                 const map<string, int> &cisSnpID2IdxMap, const double &sigmaSqBetaNonEqtl,  SigmaSqMat &sigmaSqMats, const double &piEffEieo1, 
@@ -592,6 +554,7 @@ class ApproxBayesCO : public ApproxBayesC {
                                              const vector<MatrixDat> &Qgene, const vector<VectorDat> &neQTL, EQTLJointVec &eQTLJointVec);
     };
 
+
     public:
 
     string mcmcType;
@@ -631,8 +594,6 @@ class ApproxBayesCO : public ApproxBayesC {
     SigmaSqMatResidual sigmaSqMatRes; // sample residuals
     GeneEffects geneEffectVec;
     // EQTLJointVec eQTLJointVec;
-    DeltaVec deltaVecGWAS;
-    DeltaVec deltaVecEQTL;
     ResidualVareEQTL varEps; // residuals for eQTL of genes
     ResidualVar vare;
     GenotypicVar varg;
@@ -693,8 +654,6 @@ class ApproxBayesCO : public ApproxBayesC {
     , eQTLJointVecLatent(data.geneEffectNames,data.gene2cisSnpIDMap,"EQTLJointVecLatent_")
     , snpEffectVec(data.gwasAndGeneEffectNames,data.gwas2SnpIDMap,"SnpJointVec_")
     , snpEffectVecLatent(data.gwasAndGeneEffectNames,data.gwas2SnpIDMap,"SnpJointVecLatent_")
-    , deltaVecEQTL(data.geneEffectNames,data.gene2cisSnpIDMap,"deltaEQTL_")
-    , deltaVecGWAS(data.gwasAndGeneEffectNames,data.gwas2SnpIDMap,"deltaGWAS_")
     , piEffEqtl(piEffEqtlVal, piAlpha, piBeta,"piEffEqtl")
     , piTheta(piThetaVal,piAlpha,piBeta,"piTheta")
     , piEffNonEqtl(piEffNonEqtlVal, piAlpha, piBeta,"piEffNonEqtl")
@@ -762,9 +721,6 @@ class ApproxBayesCO : public ApproxBayesC {
 
         if(mcmcType == "AIAO"){
             LOGGER << "SBayesCO-AIAO model is used." << endl;
-            for(unsigned i = 0; i < deltaVecGWAS.numGenes; ++i){
-                paramSetVec.push_back(deltaVecGWAS[i]);
-            }
             paramToPrint = {&nnsTot, &nnzGen,&piEffNonEqtl,&piEffEqtl, &nnGene, &nnsPG, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
             //  paramToPrint = {&piEffNonEqtl,&nnsTot, &sigmaSqBetaNonEqtl, &hsq,  &vareMean, &varg};
         }
@@ -773,12 +729,6 @@ class ApproxBayesCO : public ApproxBayesC {
             for(unsigned i = 0; i < eQTLJointVec.numGenes;i++){
                 paramSetVec.push_back(eQTLJointVecLatent[i]);
                 paramSetVec.push_back(snpEffectVecLatent[i]);
-            }
-            for(unsigned i = 0; i < deltaVecGWAS.numGenes; ++i){
-                paramSetVec.push_back(deltaVecGWAS[i]);
-            }
-            for(unsigned i = 0; i < deltaVecEQTL.numGenes; ++i){
-                paramSetVec.push_back(deltaVecEQTL[i]);
             }
             paramToPrint = {&nnsTot,&nnzGen, &nnEqtl,&piEffEieo1, &piEffNonEqtl, &nnGene, &nnsPG, &nsnp00, &nsnp10, &nsnp01, &nsnp11, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
         }

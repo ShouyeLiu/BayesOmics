@@ -51,27 +51,6 @@ public:
         numGenes(int(geneNames.size())){   
         }
     };
-    class DeltaMat : public vector<ParamMat*> {
-        public:
-        vector<string> geneNames;
-        vector<string> snpNames;
-        unsigned numGenes;
-        unsigned numSnps;
-        unsigned numTraits;
-        DeltaMat(const vector<string> &snpNames,
-        const vector<string> &geneNames,
-        const unsigned &numTraits,
-        const string &lab = "DeltaMat"):
-        numTraits(numTraits), 
-        numSnps(int(snpNames.size())),
-        numGenes(int(geneNames.size())){   
-            for(unsigned i = 0; i < numTraits; ++i){
-                this->push_back(new ParamMat(lab,snpNames,geneNames));
-                // values[i] = (*this)[i]->values;
-            }  
-        }
-    };
-    
     class Intercept : public Parameter, public Stat::Flat {
         // all fixed effects has flat prior
     public:
@@ -92,24 +71,6 @@ public:
         
         void sampleFromFC(vector<VectorXd> &wAcorr, const map<string, vector<int> > &genePheIdxMap,
         const VectorXd &varEps, const vector<VectorDat> &neQTL);
-    };
-
-    class DeltaVec : public vector<ParamSet*> {
-        public:
-        vector<string> colnames;
-        vector<string> geneNames;
-        unsigned numGenes;
-        map<int, vector<string>> gene2cisSnpIDMap;
-        DeltaVec(const vector<string> &geneNames,
-        const  map<int, vector<string>> &gene2cisSnpIDMap,
-        const string &lab = "DeltaVec"):
-        numGenes(int(geneNames.size())),geneNames(geneNames),gene2cisSnpIDMap(gene2cisSnpIDMap){   
-            colnames.resize(numGenes);
-            for(unsigned i = 0; i< numGenes; i++){
-                colnames[i] = lab + geneNames[i];
-                 this->push_back(new ParamSet(colnames[i], gene2cisSnpIDMap.at(i)));
-            }
-        }
     };
 
     class EQTLJointVec : public vector<ParamSet*> {
@@ -217,7 +178,7 @@ public:
             }
         }
         void sampleFromPrior();
-        void sampleFromFC(const MatrixXd & deltaMat, const MatrixXd &eQTLJointMat, const map<int,vector<int>> & gene2cisSnpMap);
+        void sampleFromFC(const MatrixXd &eQTLJointMat, const map<int,vector<int>> & gene2cisSnpMap);
     };
 
     class SigmaSqTheta : public Parameter, public Stat::InvChiSq {
@@ -481,15 +442,14 @@ public:
         }
         // AIAO model
         void sampleFromFCAIAO(VectorXd &wbcorr, vector<VectorXd> &wAcorr,const vector<MatrixDat> &Z,const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
-            SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, MatrixXd &deltaMat, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
+            SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
             const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap, const double sigmaSqBetaNonEqtl,
             SigmaSqMat &sigmaSqMats, const double &piEffEqtl, const double &piEffNonEqtl,const VectorXd varEps, const double &vare);
 
         // EIEO model
         void sampleFromFCEIEO(VectorXd &wbcorr, vector<VectorXd> &wAcorr,const vector<MatrixDat> &Z,const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
             SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, SnpEffectVec &snpEffectVecLatent, EQTLJointVec &eQTLJointVecLatent,
-            MatrixXd &deltaMat, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
-            DeltaVec deltaVecGWAS,DeltaVec deltaVecEQTL,
+            const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
             const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap, const double sigmaSqBetaNonEqtl,
             SigmaSqMat &sigmaSqMats, const double &piEffEieo1, const double &piEffEieo2, const double &piEffNonEqtl,const VectorXd varEps, const double &vare);
     };
@@ -529,8 +489,6 @@ public:
     ResidualMat residualMats; // residual matrix values for various genes;
     GeneEffects geneEffectVec;
     // EQTLJointVec eQTLJointVec;
-    DeltaMat deltaMat;
-    DeltaMat deltaTrait;
     ResidualVareEQTL varEps; // residuals for eQTL of genes
     ResidualVar vare;
     GenotypicVar varg;
@@ -574,8 +532,6 @@ public:
     // , eQTLJointMat(data.cisSnpIDVec,data.geneEffectNames)
     // , snpEffectMatLatent(data.snpEffectNames,data.gwasAndGeneEffectNames)
     // , eQTLJointMatLatent(data.snpEffectNames,data.geneEffectNames)
-    , deltaMat(data.snpEffectNames,data.gwasAndGeneEffectNames,1)
-    , deltaTrait(data.snpEffectNames,data.gwasAndGeneEffectNames,2)
     , eQTLJointVec(data.geneEffectNames,data.gene2cisSnpIDMap,"EQTLJointVec_")
     , eQTLJointVecLatent(data.geneEffectNames,data.gene2cisSnpIDMap,"EQTLJointVecLatent_")
     , snpEffectVec(data.gwasAndGeneEffectNames,data.gwas2SnpIDMap,"SnpJointVec_")
@@ -628,16 +584,10 @@ public:
         }
 
         if(mcmcType == "AIAO"){
-            for(unsigned i = 0; i < deltaMat.numTraits; ++i){
-                paramMatVec.push_back(deltaMat[i]);
-            }
             paramToPrint = {&nnsTot, &nnsGen, &nnGene, &nnsPG, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
             //  paramToPrint = {&piEffNonEqtl,&nnsTot, &sigmaSqBetaNonEqtl, &hsq,  &vareMean, &varg};
         }
         if (mcmcType == "EIEO"){
-            for(unsigned i = 0; i < deltaTrait.numTraits; ++i){
-                paramMatVec.push_back(deltaTrait[i]);
-            }
             paramToPrint = {&nnsTot, &nnsGen, &nnGene, &nnsPG, &piEffEqtl, &piEffNonEqtl,&varg, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
         }
         // if (modelPS) {

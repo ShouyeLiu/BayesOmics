@@ -255,6 +255,11 @@ void BayesC::SnpEffects::sampleFromFC_omp(VectorXd &ycorr, const MatrixXd &Z, co
     }
 }
 
+void BayesC::SnpEffects::computePosteriorMean(const unsigned int iter){
+    posteriorMean.array() += (values - posteriorMean).array()/(iter+1);
+    posteriorMeanPIP.array() += (pip - posteriorMeanPIP).array()/(iter+1);
+}
+
 void BayesC::VarEffects::sampleFromFC(const double snpEffSumSq, const unsigned numSnpEff){
     double dfTilde = df + numSnpEff;
     double scaleTilde = snpEffSumSq + df*scale;
@@ -1296,6 +1301,65 @@ void ApproxBayesC::checkHsq(vector <double>  &hsqMCMC) {
     }
 
 }
+
+
+void ApproxBayesC::NumBadSnps::compute_eigen(VectorXi &badSnps, VectorXd &effects, VectorXd &effectMean, const VectorXd &b, 
+    vector<VectorXd> &wcorrBlocks, const vector<MatrixXd> &Qblocks, const vector<LDBlockInfo*> keptLdBlockInfoVec, const int iter) {
+    if(iter == 0) LOGGER << "Computing NumBadSnps based on GWAS marginal and joint effects..." << endl;
+    
+    value = 0;
+    
+    float rate_thresh1 = 0, rate_thresh2 = 0;
+    if(iter < 300){
+        rate_thresh1 = 4.0;
+        rate_thresh2 = 2.0;
+    }else if(iter < 600){
+        rate_thresh1 = 3.0;
+        rate_thresh2 = 1.5;
+    }else if(iter < 900){
+        rate_thresh1 = 2.0;
+        rate_thresh2 = 1.3;
+    }else{
+        rate_thresh1 = 1.5;
+        rate_thresh2 = 1.1;
+    }
+    
+    unsigned nBlocks = Qblocks.size();
+    for(unsigned blk = 0; blk < nBlocks; blk++){
+        Ref<const MatrixXd> Q = Qblocks[blk];
+        Ref<VectorXd> wcorr = wcorrBlocks[blk];
+        
+        LDBlockInfo *blockInfo = keptLdBlockInfoVec[blk];
+        
+        unsigned blockStart = blockInfo->startSnpIdx;
+        unsigned blockEnd   = blockInfo->endSnpIdx;
+        
+        for(unsigned i = blockStart; i <= blockEnd; i++){
+            if (badSnps[i]) {
+                continue;
+            }
+            
+            double rate_b = abs((effectMean[i] - b[i])/b[i]);
+            bool sameSign = (b[i] >= 0.0f) == (effectMean[i] >= 0.0f);
+            double compare_rate = sameSign ? rate_thresh1 : rate_thresh2;
+
+            if(abs(effectMean[i]) > betaThresh && rate_b > compare_rate){
+                //cout << "DEL:" << "\t" << betaVal << "\t" << b[idx] << "\t" << rate_b << "\t" << compare_rate << std::endl;
+                Ref<const VectorXd> Qi = Q.col(i - blockStart);
+                wcorr = wcorr + Qi * effects[i];
+                effects[i] = 0.0;
+                effectMean[i] = 0.0;
+                badSnps[i] = 1;
+                badSnpIdx.push_back(i);
+                badSnpName.push_back(snpNames[i]);
+                if (writeTxt) out << i+1 << "\t" << snpNames[i] << endl;
+                ++value;
+            }
+        }
+    }
+}
+
+
 
 void ApproxBayesC::sampleUnknowns(){
     static int iter = 0;

@@ -25,7 +25,7 @@
 
 void BayesRO::SnpEffects::sampleFromFCAIAO(const VectorXd &gamma, VectorXd &wbcorr, vector<VectorXd> &wAcorr, const vector<MatrixDat> &Z, const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
     SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, 
-        MatrixXd &deltaMat, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap,
+        const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap,
         SigmaSqBetaNonEqtl &sigmaSqBetaNonEqtl, SigmaSqMatVec &sigmaSqMatVec,const VectorXd &piEffEqtlVec, const VectorXd &piEffNonEqtlVec, const VectorXd varEps, const double &vare) {
     numNonZeros = 0;
     numNonZerosNonEqtl = 0;
@@ -113,7 +113,6 @@ void BayesRO::SnpEffects::sampleFromFCAIAO(const VectorXd &gamma, VectorXd &wbco
                     snpEffectVec[geneIdx]->setValue(snpID,sample);
                     wbcorr = wbcorr + Z[0].col(snpID) * (oldSample - sample);
                     ssqNonEqtl += sample*sample / gamma[deltaj];
-                    deltaMat(snpIdx,geneIdx) = deltaj;
                     numNonZerosNonEqtl ++;
                     numNonZeros++;
                     numNonNullSnpTot++;
@@ -176,7 +175,6 @@ void BayesRO::SnpEffects::sampleFromFCAIAO(const VectorXd &gamma, VectorXd &wbco
                         ssqAlphaEqtl = ssqAlphaEqtl + sampleVec(1) * sampleVec(1) / gamma[deltaj];
                         gwhatMap.at(geneIdx) += ZGene[0].col(snpID)(genePheIdxPerGene) * sampleVec(1); // cis-heritability
                         gwhatGwasMap.at(geneIdx) += Z[0].col(snpID) * sampleVec(1); //med-heri
-                        deltaMat(snpIdx,geneIdx+1) = deltaj;
                         numNonZerosEqtl ++;
                         numNonZeros++;
                         isNonNullSnp = true;
@@ -332,7 +330,7 @@ void BayesRO::sampleUnknowns(){
     // aiao sampling
     if(mcmcType == "AIAO"){
         do {
-            snpEffects.sampleFromFCAIAO(gamma.values, wbcorr,wAcorr,data.ZDat,data.ZGeneDat, data.genePheIdxMap, snpEffectVec, eQTLJointVec,deltaMat[0]->values,
+            snpEffects.sampleFromFCAIAO(gamma.values, wbcorr,wAcorr,data.ZDat,data.ZGeneDat, data.genePheIdxMap, snpEffectVec, eQTLJointVec,
                                         data.gwasSnpIdx2snpIDMap,data.geneID2IdxMap,data.gwasSnpID2geneIDMap, data.cisSnpID2IdxMap, sigmaSqBetaNonEqtl, sigmaSqMatVec,
                                         piEffEqtlVec.values,piEffNonEqtlVec.values,varEps.values,vare.value);
             if (++cnt == 100) LOGGER.e(0,"Error: Zero SNP effect in the model for 100 cycles of sampling");
@@ -392,7 +390,6 @@ void BayesRO::sampleUnknowns(){
     vargGeneCis.compute(snpEffects.gwhatMap);
     vargGene.compute(data.numKeptInds,snpEffects.gwhatGwasMap,geneEffectVec.values);
     hsq.compute(varg.value, vare.value);
-    deltaMat[0]->values.setZero();
     if(data.numKeptGenes != 0){
         medHsq.compute(vargGene.value, varg.value,vare.value);
         cisHsq.compute(vargGeneCis.values, data.varPhenotypiceQTL);

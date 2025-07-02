@@ -22,7 +22,7 @@
 #include "ModelSBayesRO.hpp"
 
 void ApproxBayesRO::SnpEffects::sampleFromFCAIAO(const VectorXd &gamma, vector <VectorXd> &wcorrBlocks, vector<VectorXd> &wAcorr, const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, 
-                const map<int,vector<int> > &ldblock2gwasSnpMap, SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, DeltaVec deltaVecGWAS, 
+                const map<int,vector<int> > &ldblock2gwasSnpMap, SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, 
                 const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
                 const map<string, int> &cisSnpID2IdxMap, SigmaSqBetaNonEqtl &sigmaSqBetaNonEqtl, SigmaSqMatVec &sigmaSqMatVec, const VectorXd &piEffEqtlVec, 
                 const VectorXd &piEffNonEqtlVec, const VectorXd &nGWAS, const vector<VectorDat> &neQTL,const VectorXd &varEps, const double &vare){
@@ -124,7 +124,6 @@ void ApproxBayesRO::SnpEffects::sampleFromFCAIAO(const VectorXd &gamma, vector <
                     snpEffectVec[geneIdx]->setValue(snpID,sample);
                     wbcorr = wbcorr + Qblocks[lbs].col(snpID) * (oldSample - sample);
                     ssqNonEqtl += sample*sample / gamma[deltaj];
-                    // deltaMat(snpIdx,geneIdx) = deltaj;
                     numNonZerosNonEqtl ++;
                     numNonZeros++;
                     numNonNullSnpTot++;
@@ -180,7 +179,6 @@ void ApproxBayesRO::SnpEffects::sampleFromFCAIAO(const VectorXd &gamma, vector <
                         ssqAlphaEqtlPG[geneIdx] += sampleVec(1) * sampleVec(1) / gamma[deltaj];
                         ssqEqtlMat[geneIdx] += ( 1/ gamma[deltaj]* sampleVec * sampleVec.transpose());
                         betaTotal[snpIdx] += snpEffectVec[geneIdx +1]->getValue(snpID);
-                        // deltaMat(snpIdx,geneIdx+1) = deltaj;
                         numNonZerosEqtl ++;
                         numNonZerosEqtlVecAcrossGenesPostIW[geneIdx] ++;
                         numNonZeros++;
@@ -219,7 +217,6 @@ void ApproxBayesRO::SnpEffects::sampleFromFCAIAO(const VectorXd &gamma, vector <
 void ApproxBayesRO::SnpEffects::sampleFromFCEIEO(const int iter,const bool diagnose, const string title,
                 const VectorXd &gamma, vector <VectorXd> &wcorrBlocks, vector<VectorXd> &wAcorr, const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, 
                 const map<int,vector<int> > &ldblock2gwasSnpMap, SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, SnpEffectVec &snpEffectVecLatent, EQTLJointVec &eQTLJointVecLatent,
-                DeltaVec deltaVecGWAS, DeltaVec deltaVecEQTL,
                 const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
                 const map<string, int> &cisSnpID2IdxMap, const double &sigmaSqBetaNonEqtl, SigmaSqMatVec &sigmaSqMatVec, const VectorXd &piEffEieo1Vec,const VectorXd &piEffEieo2Vec, 
                 const VectorXd &piEffNonEqtlVec, const VectorXd &nGWAS, const vector<VectorDat> &neQTL,const VectorXd &varEps, const double &vare){
@@ -426,7 +423,7 @@ void ApproxBayesRO::sampleUnknowns(){
     if(mcmcType == "AIAO"){
         do {
             snpEffects.sampleFromFCAIAO(gamma.values, wcorrBlocks ,wAcorr,data.QblocksDat,data.QgeneDat, data.ldblock2gwasSnpMap, 
-                                        snpEffectVec,eQTLJointVec,deltaVecGWAS,
+                                        snpEffectVec,eQTLJointVec,
                                         data.gwasSnpIdx2snpIDMap,data.geneID2IdxMap,data.gwasSnpID2geneIDMap, data.cisSnpID2IdxMap, sigmaSqBetaNonEqtl, sigmaSqMatVec,
                                         piEffEqtlVec.values,piEffNonEqtlVec.values,data.n,data.neQTLVec,varEps.values,vare.value);
             if (++cnt == 100) LOGGER.e(0,"Error: Zero SNP effect in the model for 100 cycles of sampling");
@@ -443,7 +440,7 @@ void ApproxBayesRO::sampleUnknowns(){
             snpEffects.sampleFromFCEIEO(iter,diagnose,data.label,
                 gamma.values,wcorrBlocks,wAcorr,data.QblocksDat,data.QgeneDat,
                 data.ldblock2gwasSnpMap,snpEffectVec,eQTLJointVec,
-                snpEffectVecLatent,eQTLJointVecLatent, deltaVecGWAS, deltaVecEQTL,
+                snpEffectVecLatent,eQTLJointVecLatent,
                 data.gwasSnpIdx2snpIDMap,data.geneID2IdxMap,data.gwasSnpID2geneIDMap,
                 data.cisSnpID2IdxMap,sigmaSqBetaNonEqtl.value, sigmaSqMatVec,
                 piEffEieo1Vec.values,piEffEieo2Vec.values,piEffNonEqtlVec.values, data.n,data.neQTLVec,varEps.values,vare.value);

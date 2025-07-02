@@ -44,7 +44,7 @@ void BayesCO::InterceptEQTL::sampleFromFC(vector<VectorXd> &wAcorr, const map<st
 
 // AIAO model
 void BayesCO::SnpEffects::sampleFromFCAIAO(VectorXd &wbcorr, vector<VectorXd> &wAcorr,const vector<MatrixDat> &Z,const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
-    SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, MatrixXd &deltaMat, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
+    SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
     const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap, const double sigmaSqBetaNonEqtl,
     SigmaSqMat &sigmaSqMats, const double &piEffEqtl, const double &piEffNonEqtl,const VectorXd varEps, const double &vare) {
     numNonZeros = 0;
@@ -112,7 +112,6 @@ void BayesCO::SnpEffects::sampleFromFCAIAO(VectorXd &wbcorr, vector<VectorXd> &w
                     snpEffectVec[geneIdx]->setValue(snpID,sample);
                     wbcorr = wbcorr + Z[0].col(snpID) * (oldSample - sample);
                     ssqNonEqtl += sample*sample;
-                    deltaMat(snpIdx,geneIdx) = 1;
                     numNonZerosNonEqtl ++;
                     numNonZeros++;
                     numNonNullSnpTot++;
@@ -175,7 +174,6 @@ void BayesCO::SnpEffects::sampleFromFCAIAO(VectorXd &wbcorr, vector<VectorXd> &w
                     ssqEqtlMat[geneIdx] += ( sampleVec * sampleVec.transpose());
                     ssqBetaEqtl = ssqBetaEqtl + sampleVec(0) * sampleVec(0) ;
                     ssqAlphaEqtl = ssqAlphaEqtl + sampleVec(1) * sampleVec(1);
-                    deltaMat(snpIdx,geneIdx+1) = 1;
                     numNonZerosEqtl ++;
                     numNonZeros++;
                     numNonZerosEqtlVecAcrossGenesPostIW[geneIdx] ++;
@@ -216,7 +214,7 @@ void BayesCO::SnpEffects::sampleFromFCAIAO(VectorXd &wbcorr, vector<VectorXd> &w
 // EIEO model
 void BayesCO::SnpEffects::sampleFromFCEIEO(VectorXd &wbcorr, vector<VectorXd> &wAcorr,const vector<MatrixDat> &Z,const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
     SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, SnpEffectVec &snpEffectVecLatent, EQTLJointVec &eQTLJointVecLatent,
-    MatrixXd &deltaMat, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap, DeltaVec deltaVecGWAS,DeltaVec deltaVecEQTL,
+    const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
     const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap, const double sigmaSqBetaNonEqtl,
     SigmaSqMat &sigmaSqMats, const double &piEffEieo1, const double &piEffEieo2, const double &piEffNonEqtl,const VectorXd varEps, const double &vare) {
 
@@ -293,7 +291,6 @@ void BayesCO::SnpEffects::sampleFromFCEIEO(VectorXd &wbcorr, vector<VectorXd> &w
                 snpEffectVec[geneIdx]->setValue(snpID,sample);
                 wbcorr = wbcorr + Z[0].col(snpID) * (oldSample - sample);
                 ssqNonEqtl += sample*sample;
-                deltaMat(snpIdx,geneIdx) = 1;
                 numNonZerosNonEqtl ++;
                 numNonZeros++;
                 numNonNullSnpTot++;
@@ -370,16 +367,12 @@ void BayesCO::SnpEffects::sampleFromFCEIEO(VectorXd &wbcorr, vector<VectorXd> &w
                                 isNonNullSnpTrait = true;
                                 wbcorr = wbcorr + Z[0].col(snpID) * (oldSampleVec(traitIdx) - newSampleVec(traitIdx));
                                 numNonZerosEqtlVec(0) = numNonZerosEqtlVec(0) + 1;
-                                // deltaMatGWAS(snpIdx,geneIdx+1) = 1;
-                                deltaVecGWAS[geneIdx +1]->setValue(snpID,1.0);
                                 numNonZerosGenicGwasVec[geneIdx]++;
                                 ssqBetaEqtlPG[geneIdx] += sampleLatentVec(traitIdx) * sampleLatentVec(traitIdx);
                             } else {
                                 isNonNullSnpGene = true;
                                 wAcorr[geneIdx] = wAcorr[geneIdx] + ZGene[0].col(snpID)(genePheIdxPerGene) * (oldSampleVec(traitIdx) - newSampleVec(traitIdx));
                                 numNonZerosEqtlVec(1) = numNonZerosEqtlVec(1) + 1;
-                                // deltaMateQTL(snpIdx,geneIdx+1) = 1;      
-                                deltaVecEQTL[geneIdx]->setValue(snpID,1.0);
                                 numNonZerosGenicEqtlVec[geneIdx]++;
                                 // ssqAlphaEqtlPG[geneIdx] += sampleLatentVec(traitIdx) * sampleLatentVec(traitIdx);
                             }   
@@ -392,7 +385,7 @@ void BayesCO::SnpEffects::sampleFromFCEIEO(VectorXd &wbcorr, vector<VectorXd> &w
                                 } else {
                                     wAcorr[geneIdx] = wAcorr[geneIdx] + ZGene[0].col(snpID)(genePheIdxPerGene) * (oldSampleVec(traitIdx));
                                 }
-                            } // deltaTrait
+                            } 
                         } // end if statement when sampling marker effects
                         // update marker effects
                         if(traitIdx == 0){
@@ -532,7 +525,7 @@ void BayesCO::SigmaSqBetaNonEqtl::sampleFromFC(const double snpEffSumSq, const u
     value = InvChiSq::sample(dfTilde, scaleTilde);
 }
 
-void BayesCO::SigmaSqAlphaVec::sampleFromFC(const MatrixXd &deltaMat, const MatrixXd &eQTLJointMat, const map<int,vector<int>> &gene2cisSnpMap){
+void BayesCO::SigmaSqAlphaVec::sampleFromFC(const MatrixXd &eQTLJointMat, const map<int,vector<int>> &gene2cisSnpMap){
     VectorXd snpEffSumSq(geneNames.size());
     VectorXd numSnpEff(geneNames.size());
     vector<int> eQTLCommonCis;
@@ -720,7 +713,7 @@ void BayesCO::sampleUnknowns(){
     if(mcmcType == "AIAO"){
         do {
             snpEffects.sampleFromFCAIAO(wbcorr,wAcorr,data.ZDat,data.ZGeneDat, data.genePheIdxMap, snpEffectVec, eQTLJointVec,
-            deltaMat[0]->values,data.gwasSnpIdx2snpIDMap,data.geneID2IdxMap,data.gwasSnpID2geneIDMap, data.cisSnpID2IdxMap, 
+            data.gwasSnpIdx2snpIDMap,data.geneID2IdxMap,data.gwasSnpID2geneIDMap, data.cisSnpID2IdxMap, 
             sigmaSqBetaNonEqtl.value, sigmaSqMats,piEffEqtl.value,piEffNonEqtl.value,varEps.values,vare.value);
             if (++cnt == 100) LOGGER.e(0,"Error: Zero SNP effect in the model for 100 cycles of sampling");
         }while (snpEffects.numNonZeros == 0);
@@ -779,7 +772,6 @@ void BayesCO::sampleUnknowns(){
     vargGeneCis.compute(snpEffects.gwhatMap);
     vargGene.compute(data.numKeptInds,snpEffects.gwhatGwasMap,geneEffectVec.values);
     hsq.compute(varg.value, vare.value);
-    deltaMat[0]->values.setZero();
     if(data.numKeptGenes != 0){
         medHsq.compute(vargGene.value, varg.value,vare.value);
         cisHsq.compute(vargGeneCis.values, data.varPhenotypiceQTL);

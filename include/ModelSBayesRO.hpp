@@ -104,7 +104,7 @@ class ApproxBayesRO : public ApproxBayesCO {
             // << (piEffEqtlVec.array() * gamma.array() ).sum()  << endl;
         }
         void sampleFromPrior();
-        void sampleFromFC(const MatrixXd & deltaMat, const MatrixXd &eQTLJointMat, const map<int,vector<int>> & gene2cisSnpMap);
+        void sampleFromFC( const MatrixXd &eQTLJointMat, const map<int,vector<int>> & gene2cisSnpMap);
     };
 
     class SigmaSqMatVec : public vector<ParamMat*>,public Stat::Gamma, public Stat::InvChiSq, public Stat::Wishart {
@@ -219,21 +219,21 @@ class ApproxBayesRO : public ApproxBayesCO {
         }
 
         void sampleFromFCAIAO(const VectorXd &gamma, vector <VectorXd> &wcorrBlocks, vector<VectorXd> &wAcorr, const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, 
-                const map<int,vector<int> > &ldblock2gwasSnpMap, SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, DeltaVec deltaVecGWAS,
+                const map<int,vector<int> > &ldblock2gwasSnpMap, SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec,
                 const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
                 const map<string, int> &cisSnpID2IdxMap, SigmaSqBetaNonEqtl &sigmaSqBetaNonEqtl, SigmaSqMatVec &sigmaSqMatVec, const VectorXd &piEffEqtlVec, 
                 const VectorXd &piEffNonEqtlVec, const VectorXd &nGWAS, const vector<VectorDat> &neQTL,const VectorXd &varEps, const double &vare);
 
         // void sampleFromFCAIAOParallel(const VectorXd &gamma, vector <VectorXd> &wcorrBlocks, vector<VectorXd> &wAcorr, const vector <MatrixXd> &Qblocks, 
         //         const vector<LDBlockInfo*> keptLdBlockInfoVec, const vector<MatrixDat> &Qgene, const map<int,vector<int> > &ldblock2gwasSnpMap, MatrixXd &snpEffectMat, 
-        //         MatrixXd &eQTLJointMat,const map<int,vector<int>> &gene2cisSnpMap, MatrixXd &deltaMat,const map<int,string> &gwasSnpIdx2snpIDMap, const map<string,vector<int> > &gwasSnpID2geneIdxMap, 
+        //         MatrixXd &eQTLJointMat,const map<int,vector<int>> &gene2cisSnpMap, const map<int,string> &gwasSnpIdx2snpIDMap, const map<string,vector<int> > &gwasSnpID2geneIdxMap, 
         //         const map<string, int> &cisSnpID2IdxMap, SigmaSqBetaNonEqtl &sigmaSqBetaNonEqtl, SigmaSqMatVec &sigmaSqMatVec, const VectorXd &piEffEqtlVec, 
         //         const VectorXd &piEffNonEqtlVec, const VectorXd &nGWAS, const vector<VectorDat> &neQTL,const VectorXd &varEps, const VectorXd &vareBlocks);
 
         void sampleFromFCEIEO(const int iter,const bool diagnose, const string title,
                 const VectorXd &gamma, vector <VectorXd> &wcorrBlocks, vector<VectorXd> &wAcorr, const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, 
                 const map<int,vector<int> > &ldblock2gwasSnpMap, SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, SnpEffectVec &snpEffectVecLatent, 
-                EQTLJointVec &eQTLJointVecLatent, DeltaVec deltaVecGWAS, DeltaVec deltaVecEQTL,
+                EQTLJointVec &eQTLJointVecLatent,
                 const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
                 const map<string, int> &cisSnpID2IdxMap, const double &sigmaSqBetaNonEqtl, SigmaSqMatVec &sigmaSqMatVec, const VectorXd &piEffEieo1Vec,const VectorXd &piEffEieo2Vec, 
                 const VectorXd &piEffNonEqtlVec, const VectorXd &nGWAS, const vector<VectorDat> &neQTL,const VectorXd &varEps, const double &vare);
@@ -370,17 +370,11 @@ public:
         }
             if(mcmcType == "AIAO"){
                 LOGGER << "SBayesRO-AIAO model is used." << endl;
-                // for(unsigned i = 0; i < deltaMat.numTraits; ++i){
-                //     paramMatVec.push_back(deltaMat[i]);
-                // }
                 paramToPrint = {&nnsTot, &nnsGen, &nnGene, &nnsPG, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
                 //  paramToPrint = {&piEffNonEqtl,&nnsTot, &sigmaSqBetaNonEqtl, &hsq,  &vareMean, &varg};
             }
             if (mcmcType == "EIEO"){
                 LOGGER << "SBayesRO-EIEO model is used." << endl;
-                // for(unsigned i = 0; i < deltaTrait.numTraits; ++i){
-                //     paramMatVec.push_back(deltaTrait[i]);
-                // }
                 paramToPrint = {&nnsTot, &nnEqtl, &nnGene, &nnsPG, &nsnp00, &nsnp10, &nsnp01, &nsnp11, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
             }
         

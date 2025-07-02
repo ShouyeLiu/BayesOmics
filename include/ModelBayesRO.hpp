@@ -113,7 +113,7 @@ public:
 
         }
         void sampleFromPrior();
-        void sampleFromFC(const MatrixXd & deltaMat, const MatrixXd &eQTLJointMat, const map<int,vector<int>> & gene2cisSnpMap);
+        void sampleFromFC(const MatrixXd &eQTLJointMat, const map<int,vector<int>> & gene2cisSnpMap);
     };
 
     class SigmaSqMatVec : public vector<ParamMat*>,public Stat::Gamma, public Stat::InvChiSq {
@@ -206,7 +206,7 @@ public:
         }
         void sampleFromFCAIAO(const VectorXd &gamma, VectorXd &wbcorr, vector<VectorXd> &wAcorr, const vector<MatrixDat> &Z, const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
             SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, 
-                MatrixXd &deltaMat, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap,
+                const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap,
                 SigmaSqBetaNonEqtl &sigmaSqBetaNonEqtl, SigmaSqMatVec &sigmaSqMatVec,const VectorXd &piEffEqtlVec, const VectorXd &piEffNonEqtlVec, const VectorXd varEps, const double &vare);
     };
 
@@ -338,16 +338,10 @@ public:
             }
 
             if(mcmcType == "AIAO"){
-                for(unsigned i = 0; i < deltaMat.numTraits; ++i){
-                    paramMatVec.push_back(deltaMat[i]);
-            }
                 paramToPrint = {&nnsTot, &nnsGen, &nnGene, &nnsPG, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
                 //  paramToPrint = {&piEffNonEqtl,&nnsTot, &sigmaSqBetaNonEqtl, &hsq,  &vareMean, &varg};
             }
             if (mcmcType == "EIEO"){
-                for(unsigned i = 0; i < deltaTrait.numTraits; ++i){
-                    paramMatVec.push_back(deltaTrait[i]);
-                }
                 paramToPrint = {&nnsTot, &nnsGen, &nnGene, &nnsPG, &piEffEqtl, &piEffNonEqtl,&varg, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
             }
         
