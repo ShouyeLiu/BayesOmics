@@ -1279,9 +1279,9 @@ void Data::readGwasSummaryFile(const string &gwasFile, const double afDiff, cons
         }
     }
     numGWASFlip = numFlip;
-    if (numFlip) LOGGER << "flipped " << numFlip << " SNPs according to the minor allele in the reference and GWAS samples." << endl;
-    if (numInconAllele) LOGGER << "removed " << numInconAllele << " SNPs with inconsistent allele coding in between the reference and GWAS samples." << endl;
-    if (numInconAf) LOGGER << "removed " << numInconAf << " SNPs with differences in allele frequency between the reference and GWAS samples > " << afDiff << "." << endl;
+    if (numFlip) LOGGER << "flipped " << numFlip << " SNPs in GWAS samples according to the minor allele in the GWAS LD reference." << endl;
+    if (numInconAllele) LOGGER << "removed " << numInconAllele << " SNPs in GWAS samples with inconsistent allele coding in between the LD reference." << endl;
+    if (numInconAf) LOGGER << "removed " << numInconAf << " SNPs in GWAS samples with differences in allele frequency between the LD reference > " << afDiff << "." << endl;
     if (numFixed) LOGGER << "removed " << numFixed << " fixed SNPs in the GWAS samples." << endl;
     if (mafmin) LOGGER << "removed " << numMafMin << " SNPs with MAF below " << mafmin << " in either reference and GWAS samples." << endl;
     if (mafmax) LOGGER << "removed " << numMafMax << " SNPs with MAF above " << mafmax << " in either reference and GWAS samples." << endl;

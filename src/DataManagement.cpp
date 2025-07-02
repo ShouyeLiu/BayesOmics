@@ -1184,7 +1184,7 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
     // header: GeneID   GeneChr GeneStart       GeneEnd GenePhyPos      SNPID   SNPChr  PhyPos  A1      A2      A1Freq  BETA    SE      Chisq   LOG10P  N
     auto startTime = std::chrono::steady_clock::now();
     while (getline(in,inputStr)) {
-        Gadget::showProgressBar(line, totalLines, startTime,"Read xQTL info from query.gz format");
+        // Gadget::showProgressBar(line, totalLines, startTime,"Read xQTL info from query.gz format");
         if (inputStr.empty()) {continue;}
         colData.getTokens(inputStr, sep);
         geneID = colData[0];
@@ -1338,7 +1338,7 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
         numEqtlFlip = flipSet.size();
         numInconsistent2GWAS = removeSNPset.size();
         if(numInconsistent2GWAS) LOGGER << numInconsistent2GWAS << " SNPs that cannot be found in GWAS LD reference are removed." << endl;
-        if (numEqtlFlip) LOGGER << "flipped " << numEqtlFlip << " SNPs according to the minor allele in the reference and GWAS samples." << endl;
+        if (numEqtlFlip) LOGGER << "flipped " << numEqtlFlip << " SNPs in molQTL data according to the minor allele in the GWAS LD reference." << endl;
         if(numInconAllele) LOGGER << "" << numInconAllele << " inconsistent SNPs will be removed based on GWAS LD reference and samples." << endl;
     }
 
@@ -2634,7 +2634,7 @@ bool Data::readMultiEsiFile(const string &esiFile,vector<EqtlInfo *> &eqtlInfoVe
     // summary
     if(hasGeneLdmInfo) {
         numEqtlFlip = numFlip;
-        if (numFlip) LOGGER << "flipped " << numFlip << " SNPs according to the minor allele in the reference and GWAS samples." << endl;
+        if (numFlip) LOGGER << "flipped " << numFlip << " SNPs in molQTL according to the minor allele in the GWAS reference." << endl;
     }
 
     return true;
