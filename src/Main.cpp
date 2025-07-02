@@ -279,8 +279,7 @@ int main(int argc, char *argv[]){
                 omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, opt.gwasSummaryFile, opt.ldmatrixFile, opt.includeChr, opt.excludeAmbiguousSNP, opt.skeletonSnpFile, opt.geneticMapFile, opt.genMapN, opt.flank, opt.eQTLFile, opt.ldscoreFile, opt.windowFile, opt.multiLDmat, opt.excludeMHC, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale, opt.binSnp, opt.readLdmTxt);
             } else if (!opt.eigenMatrixFile.empty()) {  
                 // use  low-rank model of LD block for gwas analysis
-                omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,
-                                  opt.gwasSummaryFile, opt.eqtlSummaryFile, opt.eqtlSummaryQueryFile, opt.includeGeneFile,opt.geneSamSizeFile, opt.eigenMatrixFile, opt.geneEigenMatrixFile, opt.ldBlockInfoFile,
+                omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,opt.gwasSummaryFile, opt.eqtlSummaryFile, opt.eqtlSummaryQueryFile, opt.includeGeneFile,opt.geneSamSizeFile, opt.eigenMatrixFile, opt.geneEigenMatrixFile, opt.ldBlockInfoFile,
                                   opt.includeChr, opt.excludeAmbiguousSNP, opt.flank, opt.eQTLFile, opt.ldscoreFile,
                                   opt.eigenCutoff.maxCoeff(), opt.geneEigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
