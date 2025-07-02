@@ -10,6 +10,7 @@ configure/bin/*
 Debug
 Release
 tests/
+samples/pseudo/data/CauPleIntNull/out/
 
 debug/
 release/
