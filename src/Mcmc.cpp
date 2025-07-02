@@ -408,7 +408,6 @@ void MCMC::collectSamples(const Model &model, vector<McmcSamples*> &mcmcSampleVe
     for (unsigned j=0; j<model.paramSetVec.size(); ++j) {
         McmcSamples *mcmcSamples = mcmcSampleVec[i++];
         ParamSet *parSet = model.paramSetVec[j];
-        // LOGGER << "label: " << parSet->label << " values: " << parSet->values << endl;
         mcmcSamples->getSample(iteration, parSet->values, writeBinPosterior, writeTxtPosterior);
     }
     // Step 3. parameter with matrix values.
@@ -543,7 +542,6 @@ vector<McmcSamples*> MCMC::run(Model &model, const unsigned chainLength, const u
         LOGGER << "  Chain length: " << chainLength << " iterations" << endl;
         LOGGER << "  Burn-in: " << burnin << " iterations" << endl << endl;
     }
-    
     if (writeBinPosterior || writeTxtPosterior) {
         if (!Gadget::directoryExist(title + ".mcmcsamples")){
             Gadget::createDirectory(title + ".mcmcsamples");
@@ -552,7 +550,6 @@ vector<McmcSamples*> MCMC::run(Model &model, const unsigned chainLength, const u
     }
     // Step 1. initialize various parameters
     vector<McmcSamples*> mcmcSampleVec = initMcmcSamples(model, chainLength, burnin, thin, title, writeBinPosterior, writeTxtPosterior);
-    
     Gadget::Timer timer;
     timer.setTime();
     // Step 2. use loops to find best values
@@ -570,16 +567,13 @@ vector<McmcSamples*> MCMC::run(Model &model, const unsigned chainLength, const u
             }
         }
     }
-    
     // save the samples in the last iteration for potential continual run
-    
     if (print) {
         LOGGER << "\nMCMC cycles completed." << endl;
         printSummary(model.paramToPrint, mcmcSampleVec, title + ".parRes");
         printSetSummary(model.paramSetToPrint, mcmcSampleVec, title + ".parSetRes");
         // printSnpAnnoMembership(model.paramSetToPrint, mcmcSampleVec, title + ".snpAnnoMembership");
     }
-    
     return mcmcSampleVec;
 }
 

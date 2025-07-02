@@ -709,31 +709,19 @@ void Omics::outputPartitionedSnpResults(const Data &data,const vector<McmcSample
     map<string,McmcSamples*> eQTLJointVecMap,snpEffectVecMap,eQTLJointVecPipMap,snpEffectVecPipMap;
     boost::regex patternEqtl("EQTLJointVec_(.*)");
     boost::regex patternSNP("SnpJointVec_(.*)");
-    boost::regex patternEqtlPip("deltaEQTL_(.*)");
-    boost::regex patternGWASPip("deltaGWAS_(.*)");
     smatch matches;
     string geneID;
     for(unsigned i = 0; i < mcmcSampleVec.size(); i++){
-        // snp
+        // GWAS gene-snp pair
         if (regex_match(mcmcSampleVec[i]->label, matches, patternSNP)) {
             if (matches.size() > 1 && mcmcSampleVec[i]->label != "SnpJointVec_nonEqtl" ) snpEffectVecMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
         } 
-        // pip for snp 
-        if (regex_match(mcmcSampleVec[i]->label, matches, patternGWASPip)) {
-            if (matches.size() > 1  && mcmcSampleVec[i]->label != "deltaGWAS_nonEqtl") snpEffectVecPipMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
-        } 
+        // eQTL gene-eqtl pair
         if (regex_match(mcmcSampleVec[i]->label, matches, patternEqtl)) {
             if (matches.size() > 1) eQTLJointVecMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
         } 
-        // pip for eqtl
-        if(mcmcType == "AIAO"){
-            eQTLJointVecPipMap = snpEffectVecPipMap;
-        } else {
-            if (regex_match(mcmcSampleVec[i]->label, matches, patternEqtlPip)) {
-                if (matches.size() > 1) eQTLJointVecPipMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
-            } 
-        }
     }
+
     if(snpEffectVecMap.size() ==0 || eQTLJointVecMap.size() == 0){
         LOGGER.w(0,"Partitioned gwas snp and xqtl effect is zero when generating SNP results in the .gene.snpRes.gz file ");
         return;
@@ -782,10 +770,12 @@ void Omics::outputPartitionedSnpResults(const Data &data,const vector<McmcSample
             double betaEffect = (eqtl->flipped ? - snpEffectVecMap.at(geneID)->posteriorMean[i] : snpEffectVecMap.at(geneID)->posteriorMean[i]);
             // double lastBeta = (snp->flipped ? -lastSample[idx] : lastSample[idx]);
             double betaSE = sqrt(snpEffectVecMap.at(geneID)->posteriorSqrMean[i]-snpEffectVecMap.at(geneID)->posteriorMean[i] * snpEffectVecMap.at(geneID)->posteriorMean[i]);
+            double betaPIP = snpEffectVecMap.at(geneID)->pip[i];
             /// alpha effect 
             double alphaEffect = (eqtl->flipped ? -eQTLJointVecMap.at(geneID)->posteriorMean[i] : eQTLJointVecMap.at(geneID)->posteriorMean[i]);
             // double lastBeta = (snp->flipped ? -lastSample[idx] : lastSample[idx]);
             double alphaSE = sqrt(eQTLJointVecMap.at(geneID)->posteriorSqrMean[i]-eQTLJointVecMap.at(geneID)->posteriorMean[i] * eQTLJointVecMap.at(geneID)->posteriorMean[i]);
+            double alphaPIP = eQTLJointVecMap.at(geneID)->pip[i];
 
             // here we need to outline 
             out << boost::format("%-15s %-12s %6s %12s %6s %6s %12.6f %-15.6e %-15.6e %-15.6e %-15.6e %-15.6e %-15.6e")
@@ -798,15 +788,11 @@ void Omics::outputPartitionedSnpResults(const Data &data,const vector<McmcSample
             % (eqtl->flipped ? 1.0-eqtl->af : eqtl->af)
             % (noscale ? betaEffect : betaEffect/sqrtScaleFactorGWAS)
             % (noscale ? betaSE : betaSE/sqrtScaleFactorGWAS)
-            // % snpEffectVecPipMap.at(geneID)->posteriorMean[i]
-            % -9
+            % betaPIP
             % (noscale ? alphaEffect : alphaEffect/sqrtScaleFactoreQTL)
             % (noscale ? alphaSE : alphaSE/sqrtScaleFactoreQTL)
-            // % eQTLJointVecPipMap.at(geneID)->posteriorMean[i];
-            % -9;
+            % alphaPIP;
             out << endl;
-
-            // cout << " pip " << snpEffectVecPipMap.at(geneID)->pip << " ";
         }
     }
     boost::iostreams::close(outGZ);
