@@ -50,6 +50,7 @@ public:
     unsigned ncol;
     unsigned nnz;  // number of non-zeros for sparse matrix
     
+    
     // datMat stores various parameters; if parameter is single type, datMat is iteration/thin * 1 matrix,
     // If parameter is vector type, datMat is iteration/thin * ncol(npar) matrix.
     // If parameter is matrix type, datMat is iteration/thin *ncor matrix. In this situation, I have no idea
@@ -67,9 +68,9 @@ public:
     
     McmcSamples(const string &label, const unsigned chainLength, const unsigned burnin, const unsigned thin,
                 const unsigned npar, const string &storage_mode = "dense"):
-    label(label), chainLength(chainLength), burnin(burnin), thin(thin) {
-        nrow = chainLength/thin - burnin/thin;
-        ncol = npar;
+        label(label), chainLength(chainLength), burnin(burnin), thin(thin) {
+        nrow = chainLength/thin - burnin/thin; // row denotes the number of chain length after thin;
+        ncol = npar; // col denotes the number of parameters
         if (storage_mode == "dense") {
             storageMode = dense;
             datMat.setZero(nrow, ncol);
@@ -81,7 +82,7 @@ public:
         }
         posteriorMean.setZero(ncol);
         posteriorSqrMean.setZero(ncol);
-        pip.setZero(ncol);
+        pip.setZero(ncol); // pips for various parameters
         lastSample.setZero(ncol);
     }
     
