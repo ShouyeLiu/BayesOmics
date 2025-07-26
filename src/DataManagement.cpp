@@ -1254,10 +1254,6 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
             gene->cisSnpID2IdxMapInGene.insert(pair<string,int>(eqtl->rsID,eqtlInGene));
             gene->cisSnpSampleSizeMap.insert(pair<string,int>(eqtl->rsID,sampleSize));
             // gene->sampleSize = 
-            eQTLMarginEffect.push_back(beta);
-            eQTLMarginEffectSE.push_back(se);
-            lastGeneID = geneID;
-            eqtl->isInGene = true;
             /////////////////////////////////////
             /// check consistency of allele
             if(hasSnpInfo) {
@@ -1277,7 +1273,10 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
                     }
                 } // end of iterSnp.
             }
-            
+            eQTLMarginEffect.push_back(beta);
+            eQTLMarginEffectSE.push_back(se);
+            lastGeneID = geneID;
+            eqtl->isInGene = true;
             ////////////////////////////////////////
         } else {
             // Found gene, now add SNPs to the gene

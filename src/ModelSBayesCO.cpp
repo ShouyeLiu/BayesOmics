@@ -941,9 +941,6 @@ void ApproxBayesCO::SigmaSqMat::sampleFromFCIWIndSMatPriorEIEO(int iter, int bur
         varcovPriorsChr << sigmaSqBetaEqtlPM , 0.0, 0.0, sigmaSqAlphaPM[i];
         if(true){
             if(iter ==0 && i == 0){LOGGER << "use 10% prior " << endl;}
-            // dfPrior = 0.1*numEqtlPG[i];
-            // effArmEigen = ssqEqtlMat[i] + varcovPriorsChr * (dfPrior );
-            // dfIW = numEqtlPG[i] + dfPrior;
             dfPrior = 4;
             effArmEigen = ssqEqtlMat[i] + varcovPriorsChr * (dfPrior -3 );
             dfIW = numEqtlPG[i] + dfPrior;
@@ -957,18 +954,8 @@ void ApproxBayesCO::SigmaSqMat::sampleFromFCIWIndSMatPriorEIEO(int iter, int bur
         arma::dmat psiParam = effArma ; 
         arma::dmat sample = arma::iwishrnd(psiParam, dfIW);
         sampleEigen = Eigen::Map<Eigen::MatrixXd>(sample.memptr(),sample.n_rows, sample.n_cols);
-        // cout << "iter " << iter << " sample\n " << sampleEigen << " \nprior\n " <<  varcovPriorsChr << endl;
-        // int tmp;
-        // cin >> tmp;
         
-        /////////////////////////////////////////////////////////////////////
-        // if(i ==0 && iter == 0) LOGGER << " use independent prior" << endl;
-        // varcovPriorsChr << sigmaSqBetaEqtlPM , 0.0, 0.0, sigmaSqAlphaPM[i];
-        // sampleEigen = varcovPriorsChr;
-        // sampleEigen(0,1) = sampleEigen(1,0) = 0;
-        /////////////////////////////////////////
         sigmaSqMats[i] = sampleEigen;
-
         sigmaSqInvMats[i] = sigmaSqMats[i].inverse();
         sigmaSqDetLogVec[i] = logf( sigmaSqMats[i].determinant());
         geneEffects[i] = sampleEigen(0,1)/sampleEigen(1,1) ;
@@ -1409,7 +1396,7 @@ void ApproxBayesCO::sampleUnknowns() {
                 piEffEieo2.value = 0;
             }
         } /// end of pi sampling
-        if(true){
+        if(false){
             if(data.numKeptGenes != 0){
                 ////// Step 5. Sampling gene effect 
                 sigmaSqTheta.sampleFromFC(geneEffectVec.values.dot(geneEffectVec.values),geneEffectVec.nnGene);
@@ -1529,7 +1516,7 @@ void ApproxBayesCO::sampleUnknowns() {
     ///////////////////////////////////////
     varg.compute(iter,snpEffects.betaTotal, data.Qblocks,data.ldblock2gwasSnpMap);
     vargGene.compute(geneEffectVec.values,eQTLJointVec, data.QgeneDat);
-    geneEffectVec.values = geneEffectVec.valuesAdjust;
+    // geneEffectVec.values = geneEffectVec.valuesAdjust;
     vargGeneCis.compute(eQTLJointVec,data.QgeneDat);
     vargGeneCis.computeHsqBeta(snpEffectVec,data.QgeneDat);
     // varg.value = snpEffects.vargGenic + snpEffects.vargInt;
