@@ -12,9 +12,9 @@ cd "$example_dir/data"
 "$binary" --mcmc-type EIEO --genotype-scale pseudo-1kg-chr22-cau-lbs582-585-n10000-genotype-scale.txt \
   --hsq .5 --hsq-cis .5 \
   --pi-genic .4 --pi-genic-gwas .4 --pi-genic-xqtl .4 --pi-intergenic .01 \
-  --chain-length 3000 --burn-in 2000 --thin 1 --seed 20260914 \
+  --chain-length 1000 --burn-in 600 --thin 1 --seed 20260914 \
   --thread 1 --memory auto --genotype-storage auto \
-  --write-mcmc-txt --out-freq 3000 \
+  --write-mcmc-txt --out-freq 100 \
   --sbayes CO --gwas-summary pseudo-1kg-chr22-cau-lbs582-585-n10000-gwas.ma --beqtl-summary-gz pseudo-1kg-chr22-cau-lbs582-585-n10000-eqtl \
   --ldm-eigen "$output/pseudo-1kg-chr22-cau-lbs582-585-n10000-ld-blocks" --ldm-eigen-gene "$output/pseudo-1kg-chr22-cau-lbs582-585-n10000-molecular-ld" \
   --ldm-eigen-cutoff 1 --ldm-eigen-gene-cutoff 1 --ldm-correlation \
