@@ -26,6 +26,7 @@
 #include "Data.hpp"
 #include "Mcmc.hpp"
 #include "Model.hpp"
+#include "ModelBayesCO.hpp"
 
 class ApproxBayesCO : public ApproxBayesC {
     public:
@@ -53,6 +54,43 @@ class ApproxBayesCO : public ApproxBayesC {
         const string &lab = "SnpEffectMat"): ParamMat(lab,snpNames,geneNames),
         numSnps(int(snpNames.size())),
         numGenes(int(geneNames.size())){   
+        }
+    };
+    class DeltaMat : public vector<ParamMat*> {
+        public:
+        vector<string> geneNames;
+        vector<string> snpNames;
+        unsigned numGenes;
+        unsigned numSnps;
+        unsigned numTraits;
+        DeltaMat(const vector<string> &snpNames,
+        const vector<string> &geneNames,
+        const unsigned &numTraits,
+        const string &lab = "DeltaMat"):
+        numTraits(numTraits), 
+        numSnps(int(snpNames.size())),
+        numGenes(int(geneNames.size())){   
+            for(unsigned i = 0; i < numTraits; ++i){
+                this->push_back(new ParamMat(lab,snpNames,geneNames));
+            }  
+        }
+    };
+    
+    class DeltaVec : public vector<ParamSet*> {
+        public:
+        vector<string> colnames;
+        vector<string> geneNames;
+        unsigned numGenes;
+        map<int, vector<string>> gene2cisSnpIDMap;
+        DeltaVec(const vector<string> &geneNames,
+        const  map<int, vector<string>> &gene2cisSnpIDMap,
+        const string &lab = "DeltaVec"):
+        numGenes(int(geneNames.size())),geneNames(geneNames),gene2cisSnpIDMap(gene2cisSnpIDMap){   
+            colnames.resize(numGenes);
+            for(unsigned i = 0; i< numGenes; i++){
+                colnames[i] = lab + geneNames[i];
+                 this->push_back(new ParamSet(colnames[i], gene2cisSnpIDMap.at(i)));
+            }
         }
     };
 
@@ -259,16 +297,8 @@ class ApproxBayesCO : public ApproxBayesC {
             sigmaSqAlphaPM.setZero();
             scaleAlphaPM.setZero();
         }
-        void sampleFromFCIWIndSMatPriorAIAO(int iter, int burnIn, VectorXd &geneEffects,const double &ssqBetaEqtl,const double &ssqAlphaEqtl, 
-        const double & ssqBetaTotalGenic, const unsigned &numNonNullBetaTotGenic,
-         const  VectorXd ssqBetaEqtlPG,const  VectorXd ssqAlphaEqtlPG, vector<Matrix2d> ssqEqtlMat,
-         const VectorXd &numNonZerosEqtlVec,const VectorXd &numNonZerosEqtlVecAcrossGenesPostIW,
-         const double hsqGenic,const VectorXd cisHsqMean ,const bool messageBool);
-        void sampleFromFCIWSMatCorrPriorAIAO(int iter, int burnIn,double sigmaSqBetaEqtlPM,VectorXd sigmaSqAlphaPM, VectorXd &geneEffects,const double &ssqBetaEqtl,const double &ssqAlphaEqtl, 
-         const double & ssqBetaTotalGenic, const unsigned &numNonNullBetaTotGenic,
-         const  VectorXd ssqBetaEqtlPG,const  VectorXd ssqAlphaEqtlPG, vector<Matrix2d> ssqEqtlMat,
-         const VectorXd &numNonZerosEqtlVec , const VectorXd &numNonZerosEqtlVecAcrossGenesPostIW,
-         const double hsqGenic,const double cisHsqMean ,const bool messageBool);
+
+
 
         void sampleFromFCIWIndSMatPriorEIEO(int iter, int burnIn, const double &sigmaSqBetaEqtlPM,const VectorXd &sigmaSqAlphaPM,const vector<Matrix2d> & ssqEqtlMat, double &geneticCov, 
          VectorXd &geneEffects, const VectorXd &numEqtlPG,
@@ -309,6 +339,8 @@ class ApproxBayesCO : public ApproxBayesC {
         void setPrior(const double &gwasVare, const VectorXd &varEps);
        // VectorXd compute
     };
+     
+   
     class SnpEffects : public ApproxBayesC::SnpEffects, public Stat::MultiNormal {
     public:
         VectorXd betaTotal;     // save sample squres of full conditional normal distribution regardless of delta values
@@ -342,7 +374,6 @@ class ApproxBayesCO : public ApproxBayesC {
         VectorXd ssqAlphaEqtlPG; // ssq for alpha per gene
         VectorXd ssqBetaEqtlPG;
 
-
         VectorXd betaTotalMean; // debug
         // calculate heritability directly
         VectorXd ghat;  // used to calculate total snp heritability
@@ -357,54 +388,36 @@ class ApproxBayesCO : public ApproxBayesC {
             ssqBetaEqtl = 0;
             ssqAlphaEqtl = 0;
             ssqBetaTotalGenic = 0;
-            badSnps.setZero(size);
 
         }                                          
-        void sampleFromFCAIAO(Data data, const vector<MatrixXd> &QblocksMat, const int iter,const bool diagnose, const string title,
-                vector <VectorXd> &wcorrBlocks, vector<VectorXd> &wAcorr,vector<VectorXd> &wbcorrGene,
-                const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, 
-                const map<int,vector<int> > &ldblock2gwasSnpMap,
-                SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec,
-                const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
-                const map<string, int> &cisSnpID2IdxMap, const double &sigmaSqBetaNonEqtl,  SigmaSqMat &sigmaSqMats,SigmaSqMatResidual &sigmaSqMatRes, const double &piEffEqtl, const double &piEffNonEqtl,
-                const VectorXd &nGWAS, const vector<VectorDat> &neQTL,const VectorXd &varEps, const VectorXd &vareVec);
+        VectorXd componentCountsNonEqtl;
+        MatrixXd componentCountsEqtl;
+        std::vector<std::vector<unsigned>> parallelGroups;
+        bool parallelPlanReady = false;
+        unsigned parallelWorkerCount = 1;
 
-        void sampleFromFCEIEO(Data data,const vector<MatrixXd> &QblocksMat,const int iter,const bool diagnose, const string title, vector <VectorXd> &wcorrBlocks, 
+
+
+        void sampleFromFCEIEO(const Data &data,const vector<MatrixXd> &QblocksMat,const int iter,const bool diagnose, const string title, vector <VectorXd> &wcorrBlocks,
                 vector<VectorXd> &wAcorr, const vector <MatrixDat> &Qblocks, const vector<MatrixDat> &Qgene, const map<int,vector<int> > &ldblock2gwasSnpMap, 
+                DeltaVec deltaVecGWAS,DeltaVec deltaVecEQTL,
                 SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, SnpEffectVec &snpEffectVecLatent, EQTLJointVec &eQTLJointVecLatent,
                 const map<int,string> &gwasSnpIdx2snpIDMap, const map<string, int> &geneID2IdxMap, const map<string,vector<string> > &gwasSnpID2geneIDMap, 
                 const map<string, int> &cisSnpID2IdxMap, const double &sigmaSqBetaNonEqtl,  SigmaSqMat &sigmaSqMats, const double &piEffEieo1, 
                 const double &piEffEieo2, const double &piEffNonEqtl, const VectorXd &nGWAS, const vector<VectorDat> &neQTL,const VectorXd &varEps, const VectorXd &vareVec);
     };
 
-    class GeneEffects :public Stat::InvChiSq, public Stat::Normal, public ParamSet{
+    class GeneEffects : public BayesCO::GeneEffects {
         public:
-            vector<string> geneNames;
-            unsigned numGenes;
-            double propMed;
-            double vareMed;
-            unsigned nnGene;
-            double  ssqGene;
-            VectorXd deltaGene;
-            VectorXd valuesAdjust;
-            VectorXd geneEffectScaleFactorMean ;
-            GeneEffects(const vector<string> geneNames):
-            ParamSet("GeneEffects",geneNames),
-            numGenes(int(geneNames.size())),
-            geneNames(geneNames){
-                propMed = 0.0;
-                nnGene = 0;
-                deltaGene.setZero(numGenes);
-                valuesAdjust.setZero(numGenes);
-                geneEffectScaleFactorMean.setZero(numGenes);
-                vareMed = 0.01;
+            VectorXd valuesAdjust, geneEffectScaleFactorMean;
+            GeneEffects(const vector<string> geneNames):BayesCO::GeneEffects(geneNames) {
+                valuesAdjust.setZero(numGenes); geneEffectScaleFactorMean.setOnes(numGenes);
             }
-
-        void sampleFromeFC(Data data, int iter,const string title ,VectorXd &betaTotal, MatrixXd &eQTLJointMat,
+        void sampleFromeFC(const Data &data, int iter,const string title ,VectorXd &betaTotal, MatrixXd &eQTLJointMat,
                             const map<int,vector<int> > &gene2gwasSnpMap,const map<int,vector<int>> &gene2cisSnpMap,
                             double &sigmaSqTheta, double &vareMed, const double &piTheta, VectorXd &deltaGene);
 
-        void sampleFromeFC(Data data, int iter ,const string title, VectorXd &betaTotal, EQTLJointVec &eQTLJointVec,
+        void sampleFromeFC(const Data &data, int iter ,const string title, VectorXd &betaTotal, EQTLJointVec &eQTLJointVec,
                             const map<int,vector<int> > &gene2gwasSnpMap,
                             const map<int,string> &gwasSnpIdx2snpIDMap,
                             double &sigmaSqTheta, double &vareMed, const double &piTheta, VectorXd &deltaGene );
@@ -554,7 +567,6 @@ class ApproxBayesCO : public ApproxBayesC {
                                              const vector<MatrixDat> &Qgene, const vector<VectorDat> &neQTL, EQTLJointVec &eQTLJointVec);
     };
 
-
     public:
 
     string mcmcType;
@@ -594,6 +606,8 @@ class ApproxBayesCO : public ApproxBayesC {
     SigmaSqMatResidual sigmaSqMatRes; // sample residuals
     GeneEffects geneEffectVec;
     // EQTLJointVec eQTLJointVec;
+    DeltaVec deltaVecGWAS;
+    DeltaVec deltaVecEQTL;
     ResidualVareEQTL varEps; // residuals for eQTL of genes
     ResidualVar vare;
     GenotypicVar varg;
@@ -635,6 +649,9 @@ class ApproxBayesCO : public ApproxBayesC {
 
 
 
+    Parameter vareMedParameter{"vareMed"}, thetaInterceptParameter{"muThetaRegression"};
+    ParamSet residualVareGWAS;
+    unsigned samplingIteration=0;
     ApproxBayesCO(const Data &data,const string mcmcType,const bool eieoLatent,  const bool sampleVareBool, const bool sampleVarEpsBool, const double varGenotypic, const double varResidual, const double varRandom ,
                 const double h2snp, const double h2eQTL,const double pival,const double piEffEqtlVal, const double piGenicGwas,const double piGenicEqtl, const double piThetaVal,
                 const double piEffNonEqtlVal, const double piAlpha, const double piBeta, const bool estimatePi, const bool noscale,
@@ -644,6 +661,7 @@ class ApproxBayesCO : public ApproxBayesC {
     , wcorrBlocks(data.wcorrBlocks)
     , wAcorr(data.wAcorr)
     , wbcorrGene(data.wbcorrGene)
+    , residualVareGWAS("ResidualVareGWAS", data.ldblockNames)
     , snpEffects(data.snpEffectNames)
     , geneEffectVec(data.geneEffectNames)
     // , snpEffectMat(data.snpEffectNames,data.gwasAndGeneEffectNames)
@@ -654,6 +672,8 @@ class ApproxBayesCO : public ApproxBayesC {
     , eQTLJointVecLatent(data.geneEffectNames,data.gene2cisSnpIDMap,"EQTLJointVecLatent_")
     , snpEffectVec(data.gwasAndGeneEffectNames,data.gwas2SnpIDMap,"SnpJointVec_")
     , snpEffectVecLatent(data.gwasAndGeneEffectNames,data.gwas2SnpIDMap,"SnpJointVecLatent_")
+    , deltaVecEQTL(data.geneEffectNames,data.gene2cisSnpIDMap,"deltaEQTL_")
+    , deltaVecGWAS(data.gwasAndGeneEffectNames,data.gwas2SnpIDMap,"deltaGWAS_")
     , piEffEqtl(piEffEqtlVal, piAlpha, piBeta,"piEffEqtl")
     , piTheta(piThetaVal,piAlpha,piBeta,"piTheta")
     , piEffNonEqtl(piEffNonEqtlVal, piAlpha, piBeta,"piEffNonEqtl")
@@ -700,7 +720,7 @@ class ApproxBayesCO : public ApproxBayesC {
     , vareMean("vareBlkMean")
     , varEpsMean("vareGenMean") {
         // single parameter
-        paramVec = {&nnsGen, &nnzBtw, &nnsTot, &nnzGen,&nnEqtlOverlap, &nnsPG, &nnGene, &piEffEqtl, // aiao
+        paramVec = {&nnsGen, &nnzBtw, &nnsTot, &nnzGen,&nnEqtlOverlap, &nnsPG, &nnGene, &piEffEqtl, // genic effects
             &nnEqtl,&nsnp00, &nsnp01, &nsnp10, &nsnp11, &piEffEieo1, &piEffEieo2, 
             &piEffNonEqtl, &sigmaSqBetaEqtl, &sigmaSqBetaNonEqtl, &sigmaSqAlpha, &geneticCorr,
             &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean, &varg};
@@ -719,16 +739,18 @@ class ApproxBayesCO : public ApproxBayesC {
             paramMatVec.push_back(sigmaSqMatRes[i]);
         }
 
-        if(mcmcType == "AIAO"){
-            LOGGER << "SBayesCO-AIAO model is used." << endl;
-            paramToPrint = {&nnsTot, &nnzGen,&piEffNonEqtl,&piEffEqtl, &nnGene, &nnsPG, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
-            //  paramToPrint = {&piEffNonEqtl,&nnsTot, &sigmaSqBetaNonEqtl, &hsq,  &vareMean, &varg};
-        }
+        
         if (mcmcType == "EIEO"){
             LOGGER << "SBayesCO-EIEO model is used." << endl;
             for(unsigned i = 0; i < eQTLJointVec.numGenes;i++){
                 paramSetVec.push_back(eQTLJointVecLatent[i]);
                 paramSetVec.push_back(snpEffectVecLatent[i]);
+            }
+            for(unsigned i = 0; i < deltaVecGWAS.numGenes; ++i){
+                paramSetVec.push_back(deltaVecGWAS[i]);
+            }
+            for(unsigned i = 0; i < deltaVecEQTL.numGenes; ++i){
+                paramSetVec.push_back(deltaVecEQTL[i]);
             }
             paramToPrint = {&nnsTot,&nnzGen, &nnEqtl,&piEffEieo1, &piEffNonEqtl, &nnGene, &nnsPG, &nsnp00, &nsnp10, &nsnp01, &nsnp11, &sigmaSqBetaNonEqtl, &sigmaSqBetaEqtl, &sigmaSqAlpha, &hsq, &medHsq, &cisHsqMean, &vareMean, &varEpsMean};
         }
@@ -752,6 +774,31 @@ class ApproxBayesCO : public ApproxBayesC {
         }
        // if (randomStart) sampleStartVal();
         if (true) setStartVal();
+        if (!data.suppliedGenotypeScale.empty()) {
+            sigmaSqBetaNonEqtl.value/=data.snp2pq.mean();
+            sigmaSqBetaNonEqtl.scale=.5*sigmaSqBetaNonEqtl.value;
+            double cisMean=0; for (const auto &id:data.cisSnpIDVec) cisMean+=data.suppliedGenotypeVariance.at(id);
+            cisMean/=data.cisSnpIDVec.size();
+            sigmaSqBetaEqtl.value/=cisMean; sigmaSqAlphaVec.values/=cisMean;
+        }
+        // Native summary likelihood keeps one residual variance per LD block.
+        setStartVal();
+        vare.value=data.varResidual; vare.valueVec.setConstant(data.numKeptLDBlocks,data.varResidual);
+        varEps.values=data.varResidualeQTL;
+        paramVec={&nnsTot,&nnzBtw,&nnzGen,&nnsGen,&nnGene,&sigmaSqBetaNonEqtl,&sigmaSqBetaEqtl,&sigmaSqAlpha,
+            &sigmaSqTheta,&piTheta,&vareMedParameter,&hsq,&medHsq,&cisHsqMean,&vareMean,&varEpsMean,&varg};
+        paramSetVec={&snpEffects,&geneEffectVec,&cisHsq,&varEps,&residualVareGWAS};
+        for(auto *p:snpEffectVec) paramSetVec.push_back(p);
+        for(auto *p:eQTLJointVec) paramSetVec.push_back(p);
+        for(auto *p:deltaVecGWAS) paramSetVec.push_back(p);
+        for(auto *p:deltaVecEQTL) paramSetVec.push_back(p);
+        paramMatVec.clear(); for(auto *p:sigmaSqMats) paramMatVec.push_back(p);
+        if(mcmcType=="EIEO") {
+            for(auto *p:snpEffectVecLatent) paramSetVec.push_back(p);
+            for(auto *p:eQTLJointVecLatent) paramSetVec.push_back(p);
+        }
+        paramVec.push_back(&piEffNonEqtl);
+        paramVec.insert(paramVec.end(),{&piEffEieo1,&piEffEieo2});
 
         if(true){
             string outPath = data.label;

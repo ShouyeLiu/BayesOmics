@@ -1,3 +1,4 @@
+#include "MemoryBudget.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This file is part of BayesOmics, a statistical genetics software package
@@ -84,13 +85,37 @@ int main(int argc, char *argv[]){
     try {
         std::cout.precision(20);
         opt.readProgramOptions(argc,argv);
-        Data data;
-        data.title = opt.title;
-        data.burnIn = opt.burnin;
-        LOGGER.open(opt.title + ".log");
+        string logfilename;
+        if(opt.titleIsFolderBool){
+            boost::filesystem::path folder(opt.title);
+            boost::filesystem::path fullPath = folder / (opt.subtitle);
+            logfilename = fullPath.string();
+        } else {
+            if (!opt.title.empty() && (opt.title.back() == '/' || opt.title.back() == '\\')) {
+                opt.title.pop_back();
+            }
+            logfilename = opt.title;
+            LOGGER.w(0,"--out should point to a folder; interpreting it as a file name instead.");
+        }
+        LOGGER.open(logfilename + ".log");
+        LOGGER << "Write LOG info into file [" << logfilename << "]." << endl << endl;
+
         logRedirect(true,curTime);
         opt.printCommandLine(argc, argv); 
         Omics omics(opt);
+
+        LOGGER << MemoryBudget::describe() << endl;
+        MemoryBudget::require(1,"runtime startup");
+        Data data;
+        data.boundedIndividual = opt.analysisType=="Bayes" && !opt.dataMode && !opt.diagnosticMode && opt.algorithm!="HMC" && !opt.bedFile.empty() && opt.gwasSummaryFile.empty() && (opt.bayesType=="C" || opt.bayesType=="R" || opt.bayesType=="CO" || opt.bayesType=="RO");
+        data.matchedGWAS = opt.matchedGWAS;
+        data.ldCorrelation = opt.ldCorrelation;
+        data.fixedResidual = opt.fixedResidual;
+        data.suppliedPhenotypicVariance = opt.suppliedPhenotypicVariance;
+        data.geneSnpMapFile = opt.geneSnpMapFile;
+        if (!opt.genotypeScaleFile.empty()) data.readGenotypeScaleFile(opt.genotypeScaleFile);
+        data.title = opt.title;
+        data.burnIn = opt.burnin;
 
         if (opt.seed){
             Stat::seedEngine(opt.seed);
@@ -173,9 +198,11 @@ int main(int argc, char *argv[]){
             if (opt.outputResults) omics.outputResults(data, mcmcSampleVec, opt.bayesType, opt.mcmcType,opt.noscale, opt.title);
         } // end of analysisType: Bayes
         else if (opt.analysisType == "LDmatrix") {
+            // Parallelize independent blocks and avoid nested Eigen teams.
+            Eigen::setNbThreads(1);
             readGenotypes = false;
             if (opt.ldmatrixFile.empty()) { // make LD matrix from genotypes
-
+                data.excludeAmbiguousSNP(); // exclude ambiguous SNPs first
                 /***** Step 1. read individual and genotype infomation *****/
                 bool generateLDBool = true;
                 omics.inputIndInfo(data, opt.bedFile, "", opt.keepIndFile, opt.keepIndMax,
@@ -185,24 +212,32 @@ int main(int argc, char *argv[]){
                         opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, opt.includeChr, 
                         opt.excludeAmbiguousSNP, opt.skeletonSnpFile, opt.geneticMapFile, opt.ldBlockInfoFile, 
                         opt.includeBlock, opt.flank, opt.mafmin, opt.mafmax, opt.noscale, readGenotypes);
-                
                 /***** Step 2. read individual and genotype infomation *****/
                 if (opt.outLDmatType == "shrunk") {
                     data.makeshrunkLDmatrix(opt.bedFile + ".bed", opt.outLDmatType, opt.snpRange, opt.title, opt.writeLdmTxt, opt.effpopNE, opt.cutOff, opt.genMapN);
                 } else if (opt.outLDmatType == "block") {
-                    data.makeBlockLDmatrix(opt.bedFile + ".bed", opt.outLDmatType, opt.includeBlock, opt.title, opt.writeLdmTxt);
+                    data.makeBlockLDmatrix(opt.bedFile + ".bed", opt.outLDmatType, opt.includeBlock, opt.title, opt.writeLdmTxt,opt.ldBlockRegionWind,opt.isCovBool);
                 }
                 else {
+                    // extract subset of snplist
                     string snpRange = opt.snpRange;
                     if(!opt.partParam.empty()){
                         snpRange = data.partLDMatrix(opt.partParam, opt.title, opt.outLDmatType);
                     }
-                    data.makeLDmatrix(opt.bedFile + ".bed", opt.outLDmatType, opt.chisqThreshold, opt.LDthreshold, opt.windowWidth, snpRange, opt.title, opt.writeLdmTxt);
+                    // calculate full, bank and sparse LD matrix
+                    data.makeLDmatrix(opt.bedFile + ".bed", opt.outLDmatType, opt.chisqThreshold, opt.LDthreshold, opt.windowWidth, snpRange, opt.title, opt.writeLdmTxt,opt.isCovBool);
                 }
             }
             else { // manipulate an existing LD matrix or merge existing LD matrices
                 if (opt.mergeLdm) {
-                    data.mergeLdmInfo(opt.outLDmatType, opt.ldmatrixFile);
+                    if(opt.outLDmatType == "prscs") {
+                        data.mergeLdmInfoIntoPrsCSHdf5(opt.outLDmatType, opt.ldmatrixFile,opt.title);
+                    } else if(opt.outLDmatType == "covm") {
+                        data.mergeLdmInfoIntoCovmHdf5(opt.outLDmatType, opt.ldmatrixFile,opt.title);
+                    }
+                    else{
+                        data.mergeLdmInfo(opt.outLDmatType, opt.ldmatrixFile);
+                    }
                 }
                 else if (opt.directPrune) {
                     data.directPruneLDmatrix(opt.ldmatrixFile, opt.outLDmatType, opt.chisqThreshold, opt.title, opt.writeLdmTxt);
@@ -229,9 +264,11 @@ int main(int argc, char *argv[]){
             }
         }  // end of analysisType: LDmatrix
         else if (opt.analysisType == "LDmatrixEigen") {
+            Eigen::setNbThreads(1);
             readGenotypes = false;
+            data.excludeAmbiguousSNP(); // exclude ambiguous SNPs first
             /***** Step 2. perform eigen decomposition for gene cis-region LD matrices *****/
-            bool calcGeneLDBool = !opt.eqtlSummaryFile.empty() || !opt.eqtlSummaryQueryFile.empty() || !opt.geneListFile.empty();
+            bool calcGeneLDBool = !opt.eqtlSummaryFile.empty() || !opt.eqtlSummaryQueryFile.empty() || !opt.geneListFile.empty() || !opt.geneAnnotationFile.empty();
             if(!opt.ldBlockInfoFile.empty() || calcGeneLDBool){
                 /***** Step 1. read individual and genotype infomation *****/
                 bool generateLDBool = true;
@@ -246,12 +283,17 @@ int main(int argc, char *argv[]){
                 /***** Step 3. Do eigen-decomposition for LD Blocks or gene cis-region *****/
                 if(!opt.ldBlockInfoFile.empty()) data.calcBlockLDEigenDecom(opt.bedFile + ".bed",opt.ldBlockInfoFile,0,opt.title, opt.eigenCutoff.maxCoeff(), opt.outInfoOnly);
                 if(calcGeneLDBool ) {
+                    if(!opt.geneAnnotationFile.empty()) {
+                        if(!opt.geneListFile.empty() || !opt.eqtlSummaryFile.empty() || !opt.eqtlSummaryQueryFile.empty())
+                            throw std::runtime_error("Use one gene mapping source: annotation, SNP pairs, BESD or query");
+                        opt.geneListFile=opt.title+".gene-snps.info";
+                        data.writeGeneSnpMapFromAnnotation(opt.geneAnnotationFile,opt.geneListFile,opt.cisRegionWind);
+                    }
                     data.calcGeneLDEigenDecomBasedBesd(opt.eqtlSummaryFile,opt.eqtlSummaryQueryFile,opt.geneListFile,opt.includeSpecificGeneID, opt.title,opt.cisRegionWind, opt.eigenCutoff.maxCoeff(),opt.diagnosticMode); 
                 }             
-            }else if(!opt.eigenMatrixFile.empty()) { // merge existing eigen matrices
-                //omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, "", opt.eigenMatrixFile, opt.ldBlockInfoFile, opt.includeChr, opt.excludeAmbiguousSNP, opt.flank, opt.eQTLFile, opt.ldscoreFile, opt.eigenCutoff, opt.excludeMHC, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt);
-                /***** Step 1. perform eigen decomposition for the blocked LD matrices *****/
-                   
+            }else if(!opt.ldmatrixFile.empty()) {
+                data.readSBayesRCBlockLdmInfoFile(opt.ldmatrixFile + "/ldm.info");
+                data.readBlockLdmBinaryAndDoEigenDecomposition(opt.ldmatrixFile,opt.includeBlock,opt.eigenCutoff.maxCoeff(),opt.writeLdmTxt);
             } else{
                 LOGGER.e(0,"Something is wrong dur generating or merging low-rank LD process. \nPlease see (" + string(DOC_ONLINE) + ") for details.");
             }
@@ -279,18 +321,16 @@ int main(int argc, char *argv[]){
                 omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile, opt.gwasSummaryFile, opt.ldmatrixFile, opt.includeChr, opt.excludeAmbiguousSNP, opt.skeletonSnpFile, opt.geneticMapFile, opt.genMapN, opt.flank, opt.eQTLFile, opt.ldscoreFile, opt.windowFile, opt.multiLDmat, opt.excludeMHC, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale, opt.binSnp, opt.readLdmTxt);
             } else if (!opt.eigenMatrixFile.empty()) {  
                 // use  low-rank model of LD block for gwas analysis
-                omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,opt.gwasSummaryFile, opt.eqtlSummaryFile, opt.eqtlSummaryQueryFile, opt.includeGeneFile,opt.geneSamSizeFile, opt.eigenMatrixFile, opt.geneEigenMatrixFile, opt.ldBlockInfoFile,
+                omics.inputSnpInfo(data, opt.includeSnpFile, opt.excludeSnpFile, opt.excludeRegionFile,
+                                  opt.gwasSummaryFile, opt.eqtlSummaryFile, opt.eqtlSummaryQueryFile, opt.includeGeneFile,opt.geneSamSizeFile, opt.eigenMatrixFile, opt.geneEigenMatrixFile, opt.ldBlockInfoFile,
                                   opt.includeChr, opt.excludeAmbiguousSNP, opt.flank, opt.eQTLFile, opt.ldscoreFile,
                                   opt.eigenCutoff.maxCoeff(), opt.geneEigenCutoff.maxCoeff(), opt.excludeMHC,
                                   opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.rsqThreshold,
                                   opt.sampleOverlap, opt.imputeN, opt.noscale, opt.readLdmTxt, opt.imputeSummary, 
                                   opt.includeBlock,opt.includeBlockID);
                 // Tune process for best eigen cutoff in LD matrix
-                // double bestEigenCutoff = omics.tuneEigenCutoff(data, opt);
-                if (!opt.geneEigenMatrixFile.empty()){ // use eigen matrix for gene region
+                if (!opt.geneEigenMatrixFile.empty()){
                     LOGGER << "Tune process based on gene eigen matrix should be used here, but ignore now!" << endl;
-                    // double bestEigenCutoff = omics.tuneGeneEigenCutoff(data, opt);
-                    // data.UseGeneEigenMakeWAndQgene(bestEigenCutoff, data.gwasEffectInBlock, data.numKeptInds, opt.noscale, true);
                 }
             } else  {
                 omics.inputSnpInfo(data, opt.bedFile, opt.gwasSummaryFile, opt.afDiff, opt.mafmin, opt.mafmax, opt.pValueThreshold, opt.sampleOverlap, opt.imputeN, opt.noscale);
@@ -316,6 +356,7 @@ int main(int argc, char *argv[]){
             mcmcSampleVec = omics.runMcmc(*model, opt.chainLength, opt.burnin, opt.thin, opt.outputFreq, opt.title, opt.writeBinPosterior, opt.writeTxtPosterior);
             if (opt.outputResults) omics.outputResults(data, mcmcSampleVec, opt.bayesType,opt.mcmcType, opt.noscale, opt.title);
         } // end of analysisType: SBayes
+         
         else {
             LOGGER.e(0,"Wrong analysis type: " + opt.analysisType, "");
         } // end of analysisType
@@ -326,6 +367,9 @@ int main(int argc, char *argv[]){
         LOGGER.i(0,  "at " + timer.getDate(), "Analysis finished");
         LOGGER << "Computational time: "  << timer.format(timer.getElapse()) << endl;
 
+    } catch (const std::exception &error) {
+        LOGGER.e(0, error.what());
+        return 1;
     } catch (const string &err_msg) {
         LOGGER.e(0, err_msg);
     } catch (const char *err_msg) {

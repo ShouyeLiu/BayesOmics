@@ -1,3 +1,4 @@
+#include "MemoryBudget.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This file is part of BayesOmics, a statistical genetics software package
@@ -256,6 +257,7 @@ void Data::readPhenoFromGeneFile(const string geneID, const string & singleGeneP
         id = colData[0] + ":" + colData[1];
         it = indInfoMap.find(id);  // can be found in fam file
         if (it != indInfoMap.end() && colData[2] != "NA") {
+            if(line%4096==0)MemoryBudget::require(4096ULL*1152,"molecular phenotype records and ID mappings");
             ind = it->second;
             ind->hasEQTL = true;
             // judge if this individual is in indGene or not;
@@ -330,7 +332,7 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
     ///////////////////////////////////////////////////////
     int i,j;
     vector<locus_bp> snpVec;
-    SnpInfo *snp;
+    SnpInfo *snp = NULL;
     map<int, string>  chrEndSnp;
     map<string, int> snpNameMap;
     for (i = 1; i < numIncdSnps; i++) {
@@ -345,6 +347,32 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
         snpVec.push_back(locus_bp(snp->rsID, snp->chrom, snp->physPos ));
         snpNameMap.insert(pair<string,int>(snp->rsID, i));
     }
+    if (!geneSnpMapFile.empty()) {
+        ifstream mapIn(geneSnpMapFile);
+        if (!mapIn) throw string("Cannot open gene-SNP map: ")+geneSnpMapFile;
+        string header, geneID, snpID;
+        getline(mapIn,header);
+        istringstream columns(header); string a,b,extra,line;
+        if (!(columns >> a >> b) || a!="Gene" || b!="SNP" || (columns >> extra))
+            throw string("Gene-SNP mapping header must be: Gene SNP");
+        set<pair<string,string>> seen;
+        for (auto *g : geneInfoVec) { g->cisSnpNameVec.clear(); g->hasEqtl=false; }
+        while (getline(mapIn,line)) {
+            if (line.find_first_not_of(" \t\r")==string::npos) continue;
+            istringstream row(line);
+            if (!(row >> geneID >> snpID) || (row >> extra))
+                throw string("Malformed gene-SNP mapping row: ")+line;
+            if (!geneInfoMap.count(geneID) || !snpInfoMap.count(snpID) || !snpInfoMap.at(snpID)->included)
+                throw string("Unknown or excluded gene/SNP in explicit map: ")+geneID+" "+snpID;
+            if (!seen.emplace(geneID,snpID).second) throw string("Duplicate gene-SNP mapping: ")+geneID+" "+snpID;
+            geneInfoMap.at(geneID)->cisSnpNameVec.push_back(snpID);
+            geneInfoMap.at(geneID)->hasEqtl=true;
+            snpInfoMap.at(snpID)->iseQTL=true;
+        }
+        if (!mapIn.eof()) throw string("Malformed gene-SNP mapping: ")+geneSnpMapFile;
+        for (auto *g : geneInfoVec) g->kept=g->hasEqtl;
+        LOGGER << "Read " << seen.size() << " explicit gene-SNP pairs." << endl;
+    } else {
     /////////////////////////////////////////
     // Step 2. Map snps to genes
     /////////////////////////////////////////
@@ -428,6 +456,7 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
             // cout << incdSnpInfoVec[j]->rsID <<  " ";
         } 
     }
+    }
     ///////////////////////////////////////////////////////
     /////// Step 5. Construct EqtlInfo class
     ///////////////////////////////////////////////////////
@@ -478,162 +507,11 @@ void Data::mapGwasSnpToGeneCisRegion(const string &bedFile, const bool noscale, 
 ///// Please note only one genotype matrix from cis-region is constructed and gene-specific
 ///// cis-region matrix will be constructed via genePheIdxMap due to unequal smaple size between 
 ///// complex trait and molecular trait
-void Data::readBedFileForGene(const string &bedFile, const bool noscale){
-    ///////////////////////////////////////////////////////////////    
-    ////  Step 1. 
-    ///////////////////////////////////////////////////////////////
-    unsigned i = 0, j = 0;
-    map<string, EqtlInfo*>::iterator iterEqtl; 
-    
-    if (numeQTLs == 0) LOGGER.e(0, " No SNP from cis-region is retained for analysis.");
-    if (numKeptIndsGene == 0) LOGGER.e(0, " No individual for eqtl is retained for analysis.");
-    
-    ZGene.resize(numKeptIndsGene, numeQTLs);
-    // ZPZdiagGene.resize(numeQTLs);
-    snp2pqEqtl.resize(numeQTLs);
-
-    vector<int> eqtlIdxToInclude; // is eQTLs
-    vector<int> eqtlIdxToExclude; // not eQTLs
-
-    // /////////// debug param ////////////
-    // ZoriGene.resize(numKeptIndsGene, numeQTLs);
-    // ZcenGene.resize(numKeptIndsGene, numeQTLs);
-    // ////////////////////////////////////
-    
-    // Read bed file
-    FILE *in = fopen(bedFile.c_str(), "rb");
-    if (!in) LOGGER.e(0, " can not open the file [" + bedFile + "] to read.");
-    LOGGER << "Reading PLINK BED file from [" + bedFile + "] in SNP-major format ..." << endl;
-    char header[3];
-    fread(header, sizeof(header), 1, in);
-    if (!in || header[0] != 0x6c || header[1] != 0x1b || header[2] != 0x01) {
-        cerr << "Error: Incorrect first three bytes of bed file: " << bedFile << endl;
-        exit(1);
-    }
-    
-    // Read genotypes
-    SnpInfo *snpInfo = NULL;
-    IndInfo *indInfo = NULL;
-    unsigned snp = 0, indIdx = 0;
-    unsigned nmiss=0;
-    double sum=0.0, mean=0.0;
-    
-    const int bedToGeno[4] = {2, -9, 1, 0};
-    unsigned size = (numInds+3)>>2;
-    int genoValue;
-    unsigned long long skip = 0;
-
-    for (j = 0, snp = 0; j < numSnps; j++) {  // code adopted from BOLT-LMM with modification
-        snpInfo = snpInfoVec[j];
-        sum = 0.0;
-        nmiss = 0;
-        
-        // firstly, we need to only include included snps
-        if (!snpInfo->included) {
-        //  in.ignore(size);
-            skip += size;
-            continue;
-        }
-        // then, we need to judge this snp is eQTLs
-        if (!snpInfo->iseQTL) {
-            skip += size;
-            eqtlIdxToExclude.push_back(snp);
-            continue;
-        }
-        if (skip) fseek(in, skip, SEEK_CUR);
-        skip = 0;
- 
-        char *bedLineIn = new char[size];
-        fread(bedLineIn, 1, size, in);
-        bool genoAllSameBool = false;
-        for (i = 0,indIdx =0; i < numInds; i++) {
-            indInfo = indInfoVec[i];
-            if (!indInfo->hasEQTL) continue;
-            genoValue = bedToGeno[(bedLineIn[i>>2]>>((i&3)<<1))&3];
-            // LOGGER << "indIdx: " << indIdx << " id: " << indInfo->catID << endl;
-            ZGene(indIdx, snp) = genoValue;
-            if (genoValue == -9) ++nmiss;   // missing genotype
-            else sum += genoValue;
-            if (++indIdx == numKeptIndsGene) break;
-        }
-        delete[] bedLineIn;
-                
-        // fill missing values with the mean
-        mean = sum/double(numKeptIndsGene - nmiss);
-        if (nmiss) {
-            for (i=0; i<numKeptIndsGene; ++i) {
-                if (ZGene(i,snp) == -9) ZGene(i,snp) = mean;
-            }
-        }
-        // compute allele frequency
-        // snpInfo->af = 0.5f*mean;
-        // snp2pqEqtl[snp] = snpInfo->twopq = 2.0f*snpInfo->af*(1.0-snpInfo->af);
-        iterEqtl = eqtlInfoMap.find(snpInfo->rsID);
-        iterEqtl->second->af = 0.5*mean;
-        snp2pqEqtl[snp] = iterEqtl->second->twopq = 2.0* iterEqtl->second->af * (1- iterEqtl->second->af);
-        /// add af int eqtl info 
-        ////////////////////////////////////////////////////////////////
-        // QC begin: Here we need to do some QC step to remove some special eQTLs
-        ////////////////////////////////////////////////////////////////
-        // remove eqtl with af = 0
-        if(iterEqtl->second->af ==0){
-            iterEqtl->second->included = false;
-            LOGGER.w(0," eQTL SNP [" + iterEqtl->second->rsID + "] af " + to_string(iterEqtl->second->af) + " has 2pq = 0 and will be set as gwas SNP"); 
-        }
-        // if eqtl with same value across 
-        if(abs( ZGene.col(snp).array().maxCoeff() -  ZGene.col(snp).array().minCoeff() ) < 1e-06 ){
-            iterEqtl->second->included = false;
-            LOGGER.w(0," eQTL SNP [" + iterEqtl->second->rsID + "] has only single value " + to_string(ZGene.col(snp).array().minCoeff()) + " across individuals and will be set as gwas SNP"); 
-        }
-        if(!iterEqtl->second->included){
-            eqtlIdxToExclude.push_back(snp);
-            continue;
-        }
-        ////////////////////////////////////////////////////////////////
-        // QC end: Here we need to do some QC step to remove some special eQTLs
-        ////////////////////////////////////////////////////////////////
-
-        // ZoriGene.col(snp) = ZGene.col(snp);
-
-        ZGene.col(snp).array() -= mean; // center column by 2p rather than the real mean
-
-        // ZcenGene.col(snp) = ZGene.col(snp);
-
-        if (!noscale) {
-            ZGene.col(snp).array() /= sqrt(snp2pqEqtl[snp]);  // standardise to have variance one
-            // re-calculate 2pq after scaling
-            snp2pqEqtl[snp] = Gadget::calcVariance(ZGene.col(snp));
-        }
-        
-        // ZGene.col(snp).array() *= RinverseSqrt.array();
-        eqtlIdxToInclude.push_back(snp);
-
-        if (++snp == numeQTLs) break;
-    }
-    fclose(in);
-
-    /// udpate ZGene and snp2pqEqtl after QC for eqtls;
-    ZGene = ZGene(Eigen::all,eqtlIdxToInclude);
-    // ZoriGene = ZoriGene(Eigen::all,eqtlIdxToInclude);
-    // ZcenGene = ZcenGene(Eigen::all,eqtlIdxToInclude);
-
-    snp2pqEqtl = snp2pqEqtl(eqtlIdxToInclude);
-    snp2pqNonEqtl = snp2pq(eqtlIdxToExclude);
-
-    cout << "snp2pqEqtl sum: " << snp2pqEqtl.mean() << endl;
-    
-    ZPZdiagGene = ZGene.colwise().squaredNorm();
-    // updated eqtl to update cisSnpIDVec and cisSnpID2IdxMap
-    incdEqtlInfoVec = makeIncdEqtlInfoVec(eqtlInfoVec);
-    numIncdEqtls = (unsigned) incdEqtlInfoVec.size();
-
-    
-    MatrixDat tmpZGeneDat = MatrixDat(cisSnpIDVec,ZGene);
-    ZGeneDat.push_back(tmpZGeneDat);
-
-    // cout << "ZGene: " << ZGene.block(0,0,10,5); 
-
-    LOGGER << "Genotype data for " << numKeptIndsGene << " individuals and " << numIncdEqtls << " snps from cis-region are included from [" + bedFile + "]." << endl;
+void Data::readBedFileForGene(const string &bedFile,const bool noscale) {
+    if(!numeQTLs || !numKeptIndsGene)throw std::runtime_error("No molecular SNP/individual retained for BED analysis");
+    const bool streaming=boundedIndividual && MemoryBudget::streamGenotypes(numKeptIndsGene,numeQTLs);
+    if(!streaming)MemoryBudget::require(MemoryBudget::bytes(numKeptIndsGene,numeQTLs),"dense molecular genotypes");
+    readBedColumns(noscale,bedFile,true,!streaming);
 }
 
 // this function will be shared in both individual and summary level model
@@ -788,7 +666,7 @@ void Data::ConstructGenePheAndwAcorr(){
         VectorDat vectorDat = VectorDat(gene->cisSnpNameVec,nTmp);
         // ypyeQTL[i] = (geneValEigen.array()-geneValEigen.mean()).square().sum();
         // varPhenotypiceQTL[i] = ypyeQTL[i]/((double) geneValEigen.size() -1);
-        varPhenotypiceQTL[i] = Gadget::calcVariance(geneValEigen);
+        varPhenotypiceQTL[i] = (geneValEigen.array()-geneValEigen.mean()).square().sum()/(geneValEigen.size()-1.0);
         // cout << "gene: " << gene->ensemblID << " i: " << i << " varPHe: " << varPhenotypiceQTL[i]  << endl;
         genePheVec.push_back(geneValEigen);
         neQTLVec.push_back(vectorDat);
@@ -803,9 +681,8 @@ void Data::buildBayesOmicsMME(const string bedFile, const bool noscale, const bo
     // Construct gwas information
     ////////////////////////////////////////////////////////////
     n.resize(numIncdSnps);
-    n.setConstant(Z.rows());
-    MatrixDat tmpZDat = MatrixDat(snpEffectNames,Z);
-    ZDat.push_back(tmpZDat);
+    n.setConstant(genotype().rows());
+    ZDat.emplace_back(snpEffectNames,genotype());
     wbcorr.array() = y.array() - Gadget::calcMean(y);
     // check map
     for (unsigned j =0; j < gene2gwasSnpMap.size(); j ++){
@@ -856,6 +733,5 @@ void Data::buildBayesOmicsMME(const string bedFile, const bool noscale, const bo
     // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL SNP size in mQTLs region" % numEqtl % 0;
     // LOGGER << boost::format("%60s %8.3f %8.3f\n") %"xQTL average SNPs per molecular" % (double)(numEqtl/(double)numKeptGenes) % 0;
 }
-
 
 

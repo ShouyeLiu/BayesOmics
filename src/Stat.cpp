@@ -22,6 +22,11 @@
 #include "Stat.hpp"
 #include "Logger.hpp"
 
+// One process-wide stream; header-local engines ignore the requested seed in other translation units.
+Stat::random_engine Stat::engine;
+Stat::uniform01_generator Stat::ranf(Stat::engine, Stat::uniform_01());
+Stat::normal_generator Stat::snorm(Stat::engine, Stat::normal_distribution(0,1));
+
 void Stat::seedEngine(const int seed){
     if (seed) {
         srand(seed);
@@ -30,11 +35,13 @@ void Stat::seedEngine(const int seed){
         srand((int)time(NULL));
         engine.seed((int)time(NULL));
     }
+    snorm.distribution().reset();
+    ranf.distribution().reset();
     LOGGER << "Seed is set as " << std::to_string(seed) << "." << std::endl;
 }
 
 double Stat::Normal::sample(const double mean, const double variance){
-    return mean + snorm()*sqrtf(variance);
+    return mean + snorm()*sqrt(variance);
 }
 
 double Stat::Normal::cdf_01(const double value){

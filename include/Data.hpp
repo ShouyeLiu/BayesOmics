@@ -1,3 +1,4 @@
+#include "GenotypeView.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This file is part of BayesOmics, a statistical genetics software package
@@ -43,6 +44,8 @@
 #include <boost/regex.hpp>
 #include <omp.h>
 // #include <julia.h>
+#include <optional>
+#include <hdf5.h>
 
 #include "Macro.hpp"
 #include "Gadgets.hpp"
@@ -56,6 +59,8 @@ using namespace boost::multiprecision;
 using boost::multiprecision::cpp_dec_float_100;
 
 typedef SparseMatrix<double, Eigen::ColMajor, long long> SpMat;
+typedef SparseMatrix<float, Eigen::ColMajor, long long> fSpMat;
+// typedef int hid_t;
 
 struct VectorDat
 {
@@ -84,6 +89,11 @@ public:
     unsigned ncol;
     unsigned nrow;
     Eigen::MatrixXd values;
+    std::shared_ptr<GenotypeView> genotype;
+    GenotypeView view() const { return genotype ? *genotype : GenotypeView(values); }
+    MatrixDat(const vector<string> &names, GenotypeView source): colnames(names), ncol(source.cols()), nrow(source.rows()), genotype(std::make_shared<GenotypeView>(source)) {
+        for(unsigned j=0;j<ncol;++j)colname2index.emplace(names[j],j);
+    }
 
     MatrixDat(const vector<string> &colnames, const Eigen::MatrixXd &values)
         : colnames(colnames), ncol(int(colnames.size())), values(values)
@@ -106,7 +116,7 @@ public:
         for (unsigned j = 0; j < nrow; j++)
             rowname2index.insert(pair<string, int>(rownames[j], j));
     }
-    Eigen::VectorXd col(string nameIdx) const { return values.col(colname2index.at(nameIdx)); }
+    Eigen::Ref<const Eigen::VectorXd> col(const string &nameIdx) const { return view().col(colname2index.at(nameIdx)); }
     Eigen::VectorXd row(string nameIdx) const { return values.row(rowname2index.at(nameIdx)); }
 };
 
@@ -252,6 +262,7 @@ public:
     int windStartOri;  // original value from .info file
     int windSizeOri;
     int windEndOri;
+    int WindWidth;
     double af;       // allele frequency of a1
     double twopq;
     bool included;  // flag for inclusion in panel
@@ -260,8 +271,6 @@ public:
     bool skeleton;  // skeleton snp for sbayes
     bool flipped;   // A1 A2 alleles are flipped in between gwas and LD ref samples
     bool isInLD;
-    bool inCS;
-    bool skip;  // skip sampling its effect
     long sampleSize;
     
     string block;
@@ -318,8 +327,6 @@ public:
         skeleton = false;
         flipped = false;
         isInLD = false;
-        inCS = false;
-        skip = false;
         sampleSize = 0;
         effect = 0;
         gwas_b  = -999;
@@ -343,10 +350,11 @@ public:
     bool isProximal(const SnpInfo &snp2, const unsigned physWindow) const;
 };
 
+
 class LDBlockInfo {
 public:
     const string ID;
-    const int chrom;
+    int chrom;
     int index;
     // block
     int startPos;
@@ -394,6 +402,11 @@ public:
         numSnpInBlock = 0;
         kept = true;
         sumPosEigVal = 0;
+    }
+        bool operator<(const LDBlockInfo& other) const {
+        if (chrom != other.chrom) return chrom < other.chrom;
+        if (startPos != other.startPos) return startPos < other.startPos;
+        return index < other.index;
     }
 };
 
@@ -491,10 +504,26 @@ public:
     }
 };
 
+
 class Data {
 public:
+    bool matchedGWAS = false;
+    bool fixedResidual = false;
+    double suppliedPhenotypicVariance = 0.0;
+    void alignMatchedGwasMME();
+    string geneSnpMapFile;
+    map<string,double> suppliedGenotypeScale;
+    map<string,double> suppliedGenotypeVariance;
+    bool ldCorrelation = false;
+    VectorXd scoreOnLDScale(const VectorXd &score, const vector<string> &ids) const;
+    void designOnGenotypeScale(MatrixXd &design, const vector<string> &ids) const;
+    void readGenotypeScaleFile(const string &path);
     MatrixXd X;              // coefficient matrix for fixed effects
     MatrixXd W;              // coefficient matrix for random effects
+    bool boundedIndividual=false;
+    std::shared_ptr<BedColumns> bedColumns, geneBedColumns;
+    GenotypeView genotype() const {return bedColumns ? GenotypeView(bedColumns) : GenotypeView(Z);}
+    GenotypeView geneGenotype() const {return geneBedColumns ? GenotypeView(geneBedColumns) : GenotypeView(ZGene);}
     MatrixXd Z;              // coefficient matrix for SNP effects
     VectorXd D;              // 2pqn
     VectorXd y;              // phenotypes
@@ -505,6 +534,14 @@ public:
     vector<SparseVector <double>  > ZPZsp;
     SpMat ZPZspmat;
     SpMat ZPZinv;
+    // when calculate LD matrix, we usually use float
+    vector<VectorXf> fZPZ;
+    MatrixXf fZPZmat;
+    vector<SparseVector <float>  > fZPZsp;
+    fSpMat fZPZspmat;
+    fSpMat fZPZinv;
+    VectorXf fD; 
+    VectorXf fZPZdiag; 
     
     MatrixXd annoMat;        // annotation coefficient matrix
     MatrixXd APA;            // annotation X'X matrix
@@ -758,6 +795,7 @@ public:
     void readFamFile(const string &famFile);
     void readBimFile(const string &bimFile);
     void readBedFile(const bool noscale, const string &bedFile);
+    void readBedColumns(const bool noscale, const string &bedFile, bool molecular, bool materialize=false);
     void readPhenotypeFile(const string &phenFile, const unsigned mphen = 1);
     void readCovariateFile(const string &covarFile);
     void readRandomCovariateFile(const string &covarFile);
@@ -788,10 +826,9 @@ public:
     void getWindowInfo(const vector<SnpInfo*> &incdSnpInfoVec, const unsigned windowWidth, VectorXi &windStart, VectorXi &windSize);
     void getNonoverlapWindowInfo(const unsigned windowWidth);
     void buildSparseMME(const string &bedFile, const unsigned windowWidth);
-//    void makeLDmatrix(const string &bedFile, const unsigned windowWidth, const string &filename);
     string partLDMatrix(const string &partParam, const string &outfilename, const string &LDmatType);
-    void makeLDmatrix(const string &bedFile, const string &LDmatType, const double chisqThreshold, const double LDthreshold, const unsigned windowWidth,
-                      const string &snpRange, const string &filename, const bool writeLdmTxt);
+
+    void makeLDmatrix(const string &bedFile, const string &LDmatType, const double chisqThreshold, const double LDthreshold, const unsigned windowWidth,const string &snpRange, const string &filename, const bool writeLdmTxt, const bool isCovBool = false);
     void makeshrunkLDmatrix(const string &bedFile, const string &LDmatType, const string &snpRange, const string &filename, const bool writeLdmTxt, const double effpopNE, const double cutOff, const double genMapN);
     void resizeWindow(const vector<SnpInfo*> &incdSnpInfoVec, const VectorXi &windStartOri, const VectorXi &windSizeOri,
                       VectorXi &windStartNew, VectorXi &windSizeNew);
@@ -817,7 +854,7 @@ public:
     void readMultiLDmatBinFile(const string &mldmatFile);
     void outputSnpEffectSamples(const SpMat &snpEffects, const unsigned burnin, const unsigned outputFreq, const string &snpResFile, const string &filename) const;
     void resizeLDmatrix(const string &LDmatType, const double chisqThreshold, const unsigned windowWidth, const double LDthreshold, const double effpopNE, const double cutOff, const double genMapN);
-    void outputLDmatrix(const string &LDmatType, const string &filename, const bool writeLdmTxt) const;
+    void outputLDmatrix(const string &LDmatType, const string &filename, const bool writeLdmTxt, const bool isCovBool = false) const;
     void displayAverageWindowSize(const VectorXi &windSize);
     
     void inputSnpResults(const string &snpResFile);
@@ -837,18 +874,29 @@ public:
     void binSnpByWindowID(void);
     void filterSnpByLDrsq(const double rsqThreshold);
     void readResidualDiagFile(const string &resDiagFile);
-    
+    // various LD block info
     void mergeLdmInfo(const string &outLDmatType, const string &dirname);
+    // void mergeLdmInfoIntoPrsCSHdf5(const string &outLDmatType, const string &dirname,const string &outname);
+    void mergeLdmInfoIntoCovmHdf5(const string &outLDmatType, const string &dirname,const string &outname);
+    // static std::optional<LDBlockInfo> makeLDBlockFromFilename(const std::string& fname,int index,const std::string& marker = "block");
+    static int parseChrNumber(const std::string& s);
+
+    std::optional<LDBlockInfo> makeLDBlockFromFilename(const std::string& fname,int index, const std::string& marker = "block");
+    bool loadBlockMetaFromSnpInfo(LDBlockInfo* ldblock, const std::string& snpInfoFile);
+    bool loadBlockSnpsFromSnpInfo(LDBlockInfo* ldblock, const std::string& snpInfoFile);
+    bool loadBlockLdmBinary(const std::string& ldmBinFile, int32_t blockSize, Eigen::MatrixXf& ldm);
+    bool writeOneBlockToHdf5(hid_t file_id, const std::string& groupName, const std::vector<std::string>& snpNames,const Eigen::MatrixXf& ldm);
+    void mergeLdmInfoIntoPrsCSHdf5(const std::string& dirname, const std::string& hdf5Prefix, const std::string& outSnpInfoFile);
 
     /////////// eigen decomposition for LD blocks
     void readLDBlockInfoFile(const string &ldBlockInfoFile);
     void getEigenDataFromFullLDM(const string &filename, const float eigenCutoff = 0.995);
     void eigenDecomposition( const MatrixXf &X, const float &prop, VectorXf &eigenValAdjusted, MatrixXf &eigenVecAdjusted, float &sumPosEigVal);
-    MatrixXd generateLDmatrixPerBlock(const string &bedFile, const vector<string> &snplists); // generate full LDM for block using genotype directly
+    MatrixXd generateLDmatrixPerBlock(const string &bedFile, const vector<string> &snplists, bool isCovBool = false); // generate full LDM for block using genotype directly
     MatrixXd generateLDmatrixPerBlock(const vector<int> &snplistIdx); // generate full LDM for block using genotype Z matrix
     
 
-    void makeBlockLDmatrix(const string &bedFile, const string &LDmatType, const unsigned block, const string &filename, const bool writeLdmTxt, int ldBlockRegionWind = 0);
+    void makeBlockLDmatrix(const string &bedFile, const string &LDmatType, const unsigned block, const string &filename, const bool writeLdmTxt, int ldBlockRegionWind = 0, const bool isCovBool = false);
     void readBlockLdmBinaryAndDoEigenDecomposition(const string &dirname, const unsigned block, const float eigenCutoff, const bool writeLdmTxt);
     // get eigen matrix from LD matrix
     void getEigenDataForLDBlock(const string &bedFile, const string &ldBlockInfoFile, int ldBlockRegionWind, const string &filename, const float eigenCutoff);
@@ -965,6 +1013,7 @@ public:
 
     void mergeMultiEigenMat(const string title, const string besdListFile,const string LDMatType, const double &eigenCutoff);
     bool readMultiEigenMatInfoFile(const string title,vector<GeneInfo *> &geneInfoVecLD, map<string, GeneInfo *> &geneInfoMapLD);
+    void writeGeneSnpMapFromAnnotation(const string &annotation, const string &output, double window);
     bool readMultiEigenMatSnpInfoFile(const string title,vector<EqtlInfo *> &eqtlInfoVecLD, map<string, EqtlInfo *> &eqtlInfoMapLD);
     bool readMultiEigenMatBinFile(const string title, vector<GeneInfo*> &geneInfoVecLD,map<string, GeneInfo *> &geneInfoMapLD,vector<EqtlInfo*> &eqtlInfoVecLD,map<string, EqtlInfo *> eqtlInfoMapLD, float eigenCutoff);
     long estimateSamSize(VectorXd &beta,VectorXd &se);

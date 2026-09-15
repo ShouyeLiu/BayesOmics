@@ -40,7 +40,8 @@ class McmcSamples {
 public:
     const string label;
     string filename;
-    enum {dense, sparse} storageMode;
+    enum {dense, sparse, stream} storageMode;
+    VectorXd onlineM2, positiveCount, enrichmentCount;
     
     unsigned chainLength;
     unsigned burnin;
@@ -49,7 +50,6 @@ public:
     unsigned nrow;
     unsigned ncol;
     unsigned nnz;  // number of non-zeros for sparse matrix
-    
     
     // datMat stores various parameters; if parameter is single type, datMat is iteration/thin * 1 matrix,
     // If parameter is vector type, datMat is iteration/thin * ncol(npar) matrix.
@@ -63,26 +63,30 @@ public:
     VectorXd pip; 
     VectorXd lastSample; // save the last sample of MCMC
     
-    FILE *bout;
+    FILE *bout = nullptr;
     ofstream tout;
     
     McmcSamples(const string &label, const unsigned chainLength, const unsigned burnin, const unsigned thin,
                 const unsigned npar, const string &storage_mode = "dense"):
-        label(label), chainLength(chainLength), burnin(burnin), thin(thin) {
-        nrow = chainLength/thin - burnin/thin; // row denotes the number of chain length after thin;
-        ncol = npar; // col denotes the number of parameters
-        if (storage_mode == "dense") {
+    label(label), chainLength(chainLength), burnin(burnin), thin(thin) {
+        if (!thin || burnin>=chainLength) throw std::invalid_argument("MCMC requires thin > 0 and burn-in < chain length");
+        nrow = (uint64_t(chainLength)+thin-1)/thin - (uint64_t(burnin)+thin-1)/thin;
+        if(!nrow) throw std::invalid_argument("No retained MCMC samples for these settings");
+        ncol = npar;
+        if (storage_mode == "stream") {
+            storageMode=stream;onlineM2.setZero(ncol);positiveCount.setZero(ncol);enrichmentCount.setZero(ncol);
+        } else if (storage_mode == "dense") {
             storageMode = dense;
             datMat.setZero(nrow, ncol);
         } else if (storage_mode == "sparse") {
             storageMode = sparse;
-            //if (myMPI::rank==0) datMatSp.reserve(VectorXi::Constant(ncol,nrow));  // for faster filling the matrix
+            datMatSp.resize(nrow,ncol);  // for faster filling the matrix
         } else {
             cerr << "Error: Unrecognized storage mode: " << storage_mode << endl;
         }
         posteriorMean.setZero(ncol);
         posteriorSqrMean.setZero(ncol);
-        pip.setZero(ncol); // pips for various parameters
+        pip.setZero(ncol);
         lastSample.setZero(ncol);
     }
     
@@ -99,6 +103,8 @@ public:
     VectorXd sd(void);
     
     void initBinFile(const string &title);
+    void writeBinSample(unsigned iter,const VectorXd &sample);
+    void finishFiles();
     void initTxtFile(const string &title);
     void writeDataBin(const string &title);
     void writeDataTxt(const string &title);

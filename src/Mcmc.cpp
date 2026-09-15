@@ -1,3 +1,4 @@
+#include "MemoryBudget.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This file is part of BayesOmics, a statistical genetics software package
@@ -23,9 +24,11 @@
 
 // for  single parameter
 void McmcSamples::getSample(const unsigned iter, const double sample, const bool writeTxtPosterior, ofstream &out){
-    if (writeTxtPosterior) out << boost::format("%12s ") %sample;
+    lastSample[0]=sample;
+    if(bout) writeBinSample(iter,VectorXd::Constant(1,sample));
+    if (writeTxtPosterior) out << boost::format("%.17g ") %sample;
     if (iter % thin) return;
-    unsigned thin_iter_post_burnin = iter/thin - burnin/thin;
+    unsigned thin_iter_post_burnin = iter/thin - (burnin+thin-1)/thin;
     if (iter >= burnin) {
         datMat(thin_iter_post_burnin,0) = sample;
         // LOGGER << "thin: " << thin_iter_post_burnin << " sample: " << sample << " ";
@@ -36,18 +39,26 @@ void McmcSamples::getSample(const unsigned iter, const double sample, const bool
 
 //  for vector parameter
 void McmcSamples::getSample(const unsigned iter, const VectorXd &sample, const bool writeBinPosterior, const bool writeTxtPosterior){
-    if (storageMode == dense) {
-        if (writeTxtPosterior) tout << sample.transpose() << endl;
-    }
+    lastSample = sample;
+    if(writeBinPosterior && bout) writeBinSample(iter,sample);
+    if (writeTxtPosterior) {tout << sample.transpose() << endl;if(!tout)throw std::runtime_error("MCMC text write failed: "+filename);}
 
     if (iter % thin) return;
     unsigned thin_iter = iter/thin;
-    unsigned thin_iter_post_burnin = thin_iter - burnin/thin;
-    if (storageMode == dense) {
+    unsigned thin_iter_post_burnin = thin_iter - (burnin+thin-1)/thin;
+    if (storageMode == stream && iter >= burnin) {
+        const VectorXd change=sample-posteriorMean;
+        positiveCount.array()+=(sample.array()>0).cast<double>();
+        enrichmentCount.array()+=(sample.array()>1).cast<double>();
+        pip.array()+=((sample.array()!=0).cast<double>()-pip.array())/(thin_iter_post_burnin+1);
+        posteriorMean.array()+=change.array()/(thin_iter_post_burnin+1);
+        onlineM2.array()+=change.array()*(sample-posteriorMean).array();
+        posteriorSqrMean.array()+=(sample.array().square()-posteriorSqrMean.array())/(thin_iter_post_burnin+1);
+    } else if (storageMode == dense) {
         ArrayXd delta;
         delta.setZero(sample.size());
         for(unsigned i =0; i< sample.size();i++){
-            if(abs(sample[i]) > 5e-6) delta[i] = 1;
+            if(sample[i] != 0.0) delta[i] = 1;
         }
 
         if (iter >= burnin) {
@@ -57,22 +68,14 @@ void McmcSamples::getSample(const unsigned iter, const VectorXd &sample, const b
             posteriorSqrMean.array() += (sample.array().square() - posteriorSqrMean.array())/(thin_iter_post_burnin+1);
         }
     } else if (storageMode == sparse) {
-        lastSample = sample;
         SparseVector <double>  spvec = sample.sparseView();
-        if (writeBinPosterior) {
-            for (SparseVector <double> ::InnerIterator it(spvec); it; ++it) {
-                unsigned rc[2] = {thin_iter, (unsigned)it.index()};
-                fwrite(rc, sizeof(unsigned), 2, bout);
-                double val = it.value();
-                fwrite(&val, sizeof(double), 1, bout);
-            }
-        }
         ArrayXd delta;
         delta.setZero(sample.size());
         for (SparseVector <double> ::InnerIterator it(spvec); it; ++it) {
             delta[it.index()] = 1;
         }
         if (iter >= burnin) {
+            for(SparseVector<double>::InnerIterator it(spvec);it;++it)datMatSp.coeffRef(thin_iter_post_burnin,it.index())=it.value();
             pip.array() += (delta - pip.array())/(thin_iter_post_burnin+1);
             posteriorMean.array() += (sample - posteriorMean).array()/(thin_iter_post_burnin+1);
             posteriorSqrMean.array() += (sample.array().square() - posteriorSqrMean.array())/(thin_iter_post_burnin+1);
@@ -82,45 +85,13 @@ void McmcSamples::getSample(const unsigned iter, const VectorXd &sample, const b
 
 // for matrix parameter
 void McmcSamples::getSample(const unsigned iter, const MatrixXd &sample, const bool writeBinPosterior, const bool writeTxtPosterior){
-    // if (storageMode == dense) {
-    //     if (writeTxtPosterior) tout << sample.transpose() << endl;
-    // }
-    // if (iter % thin) return;
-    // unsigned thin_iter = iter/thin;
-    // unsigned thin_iter_post_burnin = thin_iter - burnin/thin;
-    
-    // if (storageMode == dense) {
-    //     if (iter >= burnin) {
-    //         datMat.row(thin_iter_post_burnin) = sample;
-    //         posteriorMean.array() += (sample - posteriorMean).array()/(thin_iter_post_burnin+1);
-    //         posteriorSqrMean.array() += (sample.array().square() - posteriorSqrMean.array())/(thin_iter_post_burnin+1);
-    //     }
-    // } else if (storageMode == sparse) {
-    //     lastSample = sample;
-    //     SparseVector <double>  spvec = sample.sparseView();
-    //     if (writeBinPosterior) {
-    //         for (SparseVector <double> ::InnerIterator it(spvec); it; ++it) {
-    //             unsigned rc[2] = {thin_iter, (unsigned)it.index()};
-    //             fwrite(rc, sizeof(unsigned), 2, bout);
-    //             double val = it.value();
-    //             fwrite(&val, sizeof(double), 1, bout);
-    //         }
-    //     }
-    //     // ArrayXd delta;
-    //     // delta.setZero(sample.size());
-    //     // for (SparseVector <double> ::InnerIterator it(spvec); it; ++it) {
-    //     //     delta[it.index()] = 1;
-    //     // }
-    //     // if (iter >= burnin) {
-    //     //     pip.array() += (delta - pip.array())/(thin_iter_post_burnin+1);
-    //     //     posteriorMean.array() += (sample - posteriorMean).array()/(thin_iter_post_burnin+1);
-    //     //     posteriorSqrMean.array() += (sample.array().square() - posteriorSqrMean.array())/(thin_iter_post_burnin+1);
-    //     // }
-    // }
+    VectorXd flattened = Eigen::Map<const VectorXd>(sample.data(),sample.size());
+    getSample(iter,flattened,writeBinPosterior,writeTxtPosterior);
 }
 
 
 VectorXd McmcSamples::mean(){
+    if(storageMode==stream)return posteriorMean;
     if (storageMode == dense) {
         return VectorXd::Ones(nrow).transpose()*datMat/nrow;
     } else {
@@ -129,6 +100,7 @@ VectorXd McmcSamples::mean(){
 }
 
 VectorXd McmcSamples::sd(){
+    if(storageMode==stream)return (onlineM2.array()/nrow).max(0).sqrt().matrix();
     VectorXd res(ncol);
     if (storageMode == dense) {
         for (unsigned i=0; i<ncol; ++i) {
@@ -153,8 +125,8 @@ void McmcSamples::initBinFile(const string &title){
         LOGGER.e(0," cannot open file " + filename);
     }
     nnz = 0;
-    unsigned xyn[3] = {chainLength/thin, ncol, nnz};
-    fwrite(xyn, sizeof(unsigned), 3, bout);
+    unsigned xyn[3] = {unsigned((uint64_t(chainLength)+thin-1)/thin), ncol, nnz};
+    if(fwrite(xyn,sizeof(unsigned),3,bout)!=3)throw std::runtime_error("Failed to write MCMC binary header");
 }
 
 void McmcSamples::initTxtFile(const string &title){
@@ -164,6 +136,7 @@ void McmcSamples::initTxtFile(const string &title){
     }
     filename = dirname + "/" + label + ".mcmcsamples.txt";
     tout.open(filename.c_str());
+    tout << std::setprecision(17);
     if (!tout) {
         LOGGER.e(0," cannot open file " + filename);
     }
@@ -207,35 +180,24 @@ void McmcSamples::readDataBin(const string &title){
     }
     
     unsigned xyn[3];
-    fread(xyn, sizeof(unsigned), 3, in);
-    
-    nrow = xyn[0];
-    ncol = xyn[1];
-        
-    datMatSp.resize(xyn[0], xyn[1]);
-//    vector<Triplet <double> > trips(xyn[2]);
-    vector<Triplet <double>  > trips;
-    
-    //for (int i=0; i < trips.size(); ++i){
-    while (!feof(in)) {
-        unsigned rc[2];
-        fread(rc, sizeof(unsigned), 2, in);
-        double v;
-        fread(&v, sizeof(double), 1, in);
-        
-        if(rc[0]>xyn[0] || rc[1]>xyn[1]) continue;
-        
-        //trips[i] = Triplet <double> (rc[0], rc[1], v);
-        trips.push_back(Triplet <double> (rc[0], rc[1], v));
+    if(fread(xyn,sizeof(unsigned),3,in)!=3){fclose(in);throw std::runtime_error("Truncated MCMC binary header");}
+    nrow=xyn[0];ncol=xyn[1];nnz=xyn[2];
+    if(!nrow || !ncol){fclose(in);throw std::runtime_error("Invalid MCMC binary dimensions");}
+    datMatSp.resize(nrow,ncol);vector<Triplet<double>> trips;
+    while(true) {
+        unsigned rc[2];const auto count=fread(rc,1,sizeof(rc),in);
+        if(count==0 && feof(in))break;
+        double value;
+        if(count!=sizeof(rc) || fread(&value,sizeof(double),1,in)!=1 || rc[0]>=nrow || rc[1]>=ncol || !std::isfinite(value)) {
+            fclose(in);throw std::runtime_error("Invalid or truncated MCMC binary record");
+        }
+        trips.emplace_back(rc[0],rc[1],value);
     }
     fclose(in);
-    
-    datMatSp.setFromTriplets(trips.begin(), trips.end());
-    datMatSp.makeCompressed();
-    
-    //LOGGER << "nrow: " << nrow << " ncol: " << ncol << " nonzeros: " << datMatSp.nonZeros() << " " << nnz << endl;
-    //LOGGER << MatrixXd(datMatSp) << endl;
-    
+    // Historic writers left nnz=0; retain read compatibility without duplicating the EOF record.
+    if(nnz && nnz!=trips.size())throw std::runtime_error("MCMC binary record count mismatch");
+    datMatSp.setFromTriplets(trips.begin(),trips.end());datMatSp.makeCompressed();
+
     storageMode = sparse;
 }
 
@@ -321,74 +283,37 @@ void MCMC::initTxtFile(const vector<Parameter*> &paramVec, const string &title){
 vector<McmcSamples*> MCMC::initMcmcSamples(const Model &model, const unsigned chainLength, const unsigned burnin, const unsigned thin,
                                            const string &title, const bool writeBinPosterior, const bool writeTxtPosterior){
     vector<McmcSamples*> mcmcSampleVec;
-    // here we will assign a McmcSamples for each parameter (single, vector and matrix)
-    // Step 1. parameter with single value(double);
-    // e.g., vare, pi; datMat is iteration/thin * 1 matrix
-    for (unsigned i=0; i<model.paramVec.size(); ++i) {
-        Parameter *par = model.paramVec[i];
-        McmcSamples *mcmcSamples = new McmcSamples(par->label, chainLength, burnin, thin, 1);
-        if (writeTxtPosterior) mcmcSamples->initTxtFile(title);
-        mcmcSampleVec.push_back(mcmcSamples);
+    if(!thin || burnin>=chainLength)throw std::invalid_argument("MCMC requires thin > 0 and burn-in < chain length");
+    const uint64_t rows=(uint64_t(chainLength)+thin-1)/thin-(uint64_t(burnin)+thin-1)/thin;
+    uint64_t count=0, fixedCount=model.paramVec.size();
+    for(auto *p:model.paramSetVec){count+=p->size;if(p->label=="CovEffects" || p->label=="RandCovEffects")fixedCount+=p->size;}
+    for(auto *p:model.paramMatVec)count+=MemoryBudget::bytes(p->nrow,p->ncol,1);
+    MemoryBudget::require(MemoryBudget::bytes(count,10)+MemoryBudget::bytes(rows,fixedCount),"MCMC posterior state and covariate/scalar traces");
+    const bool streaming=MemoryBudget::streamChains(MemoryBudget::bytes(rows,count+model.paramVec.size()));
+    if(streaming && !writeBinPosterior && !writeTxtPosterior)throw std::runtime_error("Streaming MCMC requires --write-mcmc-txt or --write-mcmc-bin to preserve samples");
+    LOGGER << "MCMC retention: " << (streaming?"disk stream with online posterior statistics":"in memory") << "; full requested text/binary output preserved." << endl;
+    for(auto *par:model.paramVec){
+        auto *samples=new McmcSamples(par->label,chainLength,burnin,thin,1);
+        if(writeBinPosterior)samples->initBinFile(title);
+        mcmcSampleVec.push_back(samples);
     }
-    // Step 2. parameter with many values(vector): 
-    // e.g., delta, beta 
-    for (unsigned i=0; i<model.paramSetVec.size(); ++i) {
-        ParamSet *parSet = model.paramSetVec[i];
-        McmcSamples *mcmcSamples;
-        if (parSet->label.find("SnpEffects") != string::npos) {
-            mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size, "dense");
-            if (writeBinPosterior) mcmcSamples->initBinFile(title);
-            if (writeTxtPosterior) mcmcSamples->initTxtFile(title);
-        } else if (parSet->label.find("GeneEffects") != string::npos) {
-            mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size, "dense");
-            if (writeBinPosterior) mcmcSamples->initBinFile(title);
-            if (writeTxtPosterior) mcmcSamples->initTxtFile(title);
-        } else if (parSet->label.find("EQTLJointVec") != string::npos) {
-            mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size, "dense");
-            if (writeBinPosterior) mcmcSamples->initBinFile(title);
-            if (writeTxtPosterior) mcmcSamples->initTxtFile(title);
-        }
-
-        ////////////////////////
-        // if (parSet->label.find("SnpEffects") != string::npos) {
-        //     mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size, "sparse");
-        //     if (writeBinPosterior) mcmcSamples->initBinFile(title);
-        //     // mcmcSamples->initTxtFile(title);
-        // } else if (parSet->label.find("GeneEffects") != string::npos) {
-        //     mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size, "dense");
-        //     // if (writeBinPosterior) mcmcSamples->initBinFile(title);
-        //     mcmcSamples->initTxtFile(title);
-        // // } else if (parSet->label.find("EQTLJointVec") != string::npos) {
-        // //     mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size, "sparse");
-        // //     if (writeBinPosterior) mcmcSamples->initBinFile(title);
-        // //     // mcmcSamples->initTxtFile(title);
-        // } 
-        /////////////////////
-        else if (parSet->label.find("Delta") != string::npos) {
-            mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size, "sparse");
-            if (writeBinPosterior) mcmcSamples->initBinFile(title);
-        } else {
-            mcmcSamples = new McmcSamples(parSet->label, chainLength, burnin, thin, parSet->size);
-            if (writeTxtPosterior) mcmcSamples->initTxtFile(title);
-        }
-        mcmcSampleVec.push_back(mcmcSamples);
+    for(auto *par:model.paramSetVec){
+        const bool fixed=par->label=="CovEffects" || par->label=="RandCovEffects";
+        const string mode=streaming && !fixed?"stream":(par->label.find("Delta")!=string::npos?"sparse":"dense");
+        auto *samples=new McmcSamples(par->label,chainLength,burnin,thin,par->size,mode);
+        if(writeBinPosterior)samples->initBinFile(title);
+        if(writeTxtPosterior)samples->initTxtFile(title);
+        mcmcSampleVec.push_back(samples);
     }
     // Step 3. parameter with matrix values.
-    for (unsigned i = 0; i < model.paramMatVec.size();++i){
-        ParamMat *parMatSet = model.paramMatVec[i];
-        McmcSamples *mcmcSamples;
-        if (parMatSet->label.find("EQTLJointMat") != string::npos){
-            mcmcSamples = new McmcSamples(parMatSet->label, chainLength, burnin, thin, parMatSet->ncol, "sparse");
-            if (writeBinPosterior) mcmcSamples->initBinFile(title);
-        } else if(parMatSet->label.find("SnpEffectMat") != string::npos){
-            mcmcSamples = new McmcSamples(parMatSet->label, chainLength, burnin, thin, parMatSet->ncol, "sparse");
-            if (writeBinPosterior) mcmcSamples->initBinFile(title);
-        } else if (parMatSet->label.find("SigmaSqMats") != string::npos) {
-            mcmcSamples = new McmcSamples(parMatSet->label, chainLength, burnin, thin, parMatSet->ncol, "sparse");
-        }else {
-            mcmcSamples = new McmcSamples(parMatSet->label, chainLength, burnin, thin, parMatSet->ncol, "sparse");
+    for (auto *par : model.paramMatVec) {
+        auto *samples = new McmcSamples(par->label,chainLength,burnin,thin,par->nrow*par->ncol,streaming?"stream":"dense");
+        if(writeBinPosterior) samples->initBinFile(title);
+        if (writeTxtPosterior) {
+            samples->initTxtFile(title);
+            samples->tout << "# matrix " << par->nrow << " " << par->ncol << " column-major; one complete iteration per row\n";
         }
-        mcmcSampleVec.push_back(mcmcSamples);
+        mcmcSampleVec.push_back(samples);
     }
     if (writeTxtPosterior) initTxtFile(model.paramVec, title);
     return mcmcSampleVec;
@@ -408,6 +333,7 @@ void MCMC::collectSamples(const Model &model, vector<McmcSamples*> &mcmcSampleVe
     for (unsigned j=0; j<model.paramSetVec.size(); ++j) {
         McmcSamples *mcmcSamples = mcmcSampleVec[i++];
         ParamSet *parSet = model.paramSetVec[j];
+        // LOGGER << "label: " << parSet->label << " values: " << parSet->values << endl;
         mcmcSamples->getSample(iteration, parSet->values, writeBinPosterior, writeTxtPosterior);
     }
     // Step 3. parameter with matrix values.
@@ -416,7 +342,7 @@ void MCMC::collectSamples(const Model &model, vector<McmcSamples*> &mcmcSampleVe
         ParamMat * parMatSet = model.paramMatVec[j];
         mcmcSamples->getSample(iteration,parMatSet->values,writeBinPosterior, writeTxtPosterior);
     }
-    out << endl;
+    if(writeTxtPosterior){out << endl;if(!out)throw std::runtime_error("MCMC scalar text write failed");}
     // LOGGER << endl;
 }
 
@@ -516,7 +442,9 @@ void MCMC::printSetSummary(const vector<ParamSet*> &paramSetToPrint, const vecto
                     Gadget::Tokenizer token;
                     token.getTokens(parset->label, "_");
                     double postprob = 0;
-                    if (token.back() == "Enrichment") {
+                    if (mcmcSamples->storageMode==McmcSamples::stream) {
+                        postprob=token.back()=="Enrichment" ? mcmcSamples->enrichmentCount[col] : mcmcSamples->positiveCount[col];
+                    } else if (token.back() == "Enrichment") {
                         for (unsigned row=0; row<mcmcSamples->nrow; ++row) {
                             if (mcmcSamples->datMat(row, col) > 1) ++postprob;
                         }
@@ -542,6 +470,7 @@ vector<McmcSamples*> MCMC::run(Model &model, const unsigned chainLength, const u
         LOGGER << "  Chain length: " << chainLength << " iterations" << endl;
         LOGGER << "  Burn-in: " << burnin << " iterations" << endl << endl;
     }
+    
     if (writeBinPosterior || writeTxtPosterior) {
         if (!Gadget::directoryExist(title + ".mcmcsamples")){
             Gadget::createDirectory(title + ".mcmcsamples");
@@ -550,6 +479,7 @@ vector<McmcSamples*> MCMC::run(Model &model, const unsigned chainLength, const u
     }
     // Step 1. initialize various parameters
     vector<McmcSamples*> mcmcSampleVec = initMcmcSamples(model, chainLength, burnin, thin, title, writeBinPosterior, writeTxtPosterior);
+    
     Gadget::Timer timer;
     timer.setTime();
     // Step 2. use loops to find best values
@@ -567,13 +497,18 @@ vector<McmcSamples*> MCMC::run(Model &model, const unsigned chainLength, const u
             }
         }
     }
+    
+    for(auto *sample:mcmcSampleVec) sample->finishFiles();
+    if(out.is_open()) out.close();
     // save the samples in the last iteration for potential continual run
+    
     if (print) {
         LOGGER << "\nMCMC cycles completed." << endl;
         printSummary(model.paramToPrint, mcmcSampleVec, title + ".parRes");
         printSetSummary(model.paramSetToPrint, mcmcSampleVec, title + ".parSetRes");
         // printSnpAnnoMembership(model.paramSetToPrint, mcmcSampleVec, title + ".snpAnnoMembership");
     }
+    
     return mcmcSampleVec;
 }
 
@@ -659,7 +594,9 @@ void MCMC::convergeDiagGelmanRubin(const Model &model, vector<vector<McmcSamples
                         Gadget::Tokenizer token;
                         token.getTokens(parset->label, "_");
                         double postprob = 0;
-                        if (token.back() == "Enrichment") {
+                        if (mcmcSamples->storageMode==McmcSamples::stream) {
+                        postprob=token.back()=="Enrichment" ? mcmcSamples->enrichmentCount[col] : mcmcSamples->positiveCount[col];
+                    } else if (token.back() == "Enrichment") {
                             for (unsigned row=0; row<mcmcSamples->nrow; ++row) {
                                 if (mcmcSamples->datMat(row, col) > 1) ++postprob;
                             }
@@ -678,4 +615,25 @@ void MCMC::convergeDiagGelmanRubin(const Model &model, vector<vector<McmcSamples
         
     }
 
+}
+
+
+void McmcSamples::writeBinSample(unsigned iter,const VectorXd &sample) {
+    if(iter%thin)return;
+    for(unsigned j=0;j<sample.size();++j)if(sample[j]!=0.0) {
+        if(nnz==std::numeric_limits<unsigned>::max())throw std::runtime_error("MCMC binary record count exceeds format limit; use text output or increase thin");
+        const unsigned rc[2]={iter/thin,j};const double value=sample[j];
+        if(fwrite(rc,sizeof(unsigned),2,bout)!=2 || fwrite(&value,sizeof(double),1,bout)!=1)
+            throw std::runtime_error("Failed to write MCMC binary record");
+        ++nnz;
+    }
+}
+void McmcSamples::finishFiles() {
+    if(tout.is_open()){tout.flush();if(!tout)throw std::runtime_error("MCMC text flush failed: "+filename);tout.close();if(tout.fail())throw std::runtime_error("MCMC text close failed: "+filename);}
+    if(bout) {
+        if(fseek(bout,2*sizeof(unsigned),SEEK_SET)!=0 || fwrite(&nnz,sizeof(unsigned),1,bout)!=1)
+            throw std::runtime_error("Failed to finalize MCMC binary count");
+        if(fclose(bout)!=0)throw std::runtime_error("Failed to close MCMC binary output");
+        bout=nullptr;
+    }
 }

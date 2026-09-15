@@ -18,6 +18,7 @@
 // You should have received a copy of the GNU General Public License
 // along with BayesOmics. If not, see <https://www.gnu.org/licenses/>.
 
+#include "ParallelGibbs.hpp"
 #include "Model.hpp"
 
 
@@ -64,16 +65,16 @@ void BayesC::VarRandomEffects::sampleFromFC(const double randEffSumSq, const uns
     value = InvChiSq::sample(dfTilde, scaleTilde);    
 }
 
-void BayesC::SnpEffects::sampleFromFC(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
+void BayesC::SnpEffects::sampleFromFC(VectorXd &ycorr, const GenotypeView &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
 const double sigmaSq, const double pi, const double vare, VectorXd &ghat){
     if (algorithm == gibbs) {
         gibbsSampler(ycorr, Z, ZPZdiag, Rsqrt, weightedRes, sigmaSq, pi, vare, ghat);
     } else if (algorithm == hmc) {
-        hmcSampler(ycorr, Z, ZPZdiag, sigmaSq, pi, vare, ghat);
+        hmcSampler(ycorr, Z.dense(), ZPZdiag, sigmaSq, pi, vare, ghat);
     }
 }
 
-void BayesC::SnpEffects::gibbsSampler(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
+void BayesC::SnpEffects::gibbsSampler(VectorXd &ycorr, const GenotypeView &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
                                       const double sigmaSq, const double pi, const double vare, VectorXd &ghat){
     sumSq = 0.0;
     numNonZeros = 0;
@@ -92,7 +93,7 @@ void BayesC::SnpEffects::gibbsSampler(VectorXd &ycorr, const MatrixXd &Z, const 
     
     for (unsigned i=0; i<size; ++i) {
         oldSample = values[i];
-        rhs = Z.col(i).dot(ycorr);
+        rhs = ParallelGibbs::dot(Z.col(i),ycorr);
         rhs += ZPZdiag[i]*oldSample;
         rhs *= invVare;
         invLhs = 1.0/(ZPZdiag[i]*invVare + invSigmaSq);
@@ -105,13 +106,13 @@ void BayesC::SnpEffects::gibbsSampler(VectorXd &ycorr, const MatrixXd &Z, const 
         
         if (bernoulli.sample(probDelta1)) {
             values[i] = normal.sample(uhat, invLhs);
-            ycorr += Z.col(i) * (oldSample - values[i]);
+            ParallelGibbs::axpy(Z.col(i),oldSample-values[i],ycorr);
             if (weightedRes) ghat += Z.col(i).cwiseProduct(Rsqrt) * values[i];
-            else ghat  += Z.col(i) * values[i];
+            else ParallelGibbs::axpy(Z.col(i),values[i],ghat);
             sumSq += values[i]*values[i];
             ++numNonZeros;
         } else {
-            if (oldSample) ycorr += Z.col(i) * oldSample;
+            if (oldSample) ParallelGibbs::axpy(Z.col(i),oldSample,ycorr);
             values[i] = 0.0;
         }
     }
@@ -255,11 +256,6 @@ void BayesC::SnpEffects::sampleFromFC_omp(VectorXd &ycorr, const MatrixXd &Z, co
     }
 }
 
-void BayesC::SnpEffects::computePosteriorMean(const unsigned int iter){
-    posteriorMean.array() += (values - posteriorMean).array()/(iter+1);
-    posteriorMeanPIP.array() += (pip - posteriorMeanPIP).array()/(iter+1);
-}
-
 void BayesC::VarEffects::sampleFromFC(const double snpEffSumSq, const unsigned numSnpEff){
     double dfTilde = df + numSnpEff;
     double scaleTilde = snpEffSumSq + df*scale;
@@ -332,7 +328,7 @@ void BayesC::RandomVar::compute(const VectorXd &rhat){
     value = ssq/size - mean*mean;
 }
 
-void BayesC::Rounding::computeYcorr(const VectorXd &y, const MatrixXd &X, const MatrixXd &W, const MatrixXd &Z,
+void BayesC::Rounding::computeYcorr(const VectorXd &y, const MatrixXd &X, const MatrixXd &W, const GenotypeView &Z,
                                     const VectorXd &fixedEffects, const VectorXd &randomEffects, const VectorXd &snpEffects,
                                     VectorXd &ycorr){
     if (count++ % 100) return;
@@ -355,19 +351,20 @@ void BayesC::sampleUnknowns(){
     }
     unsigned cnt=0;
    do {
-        snpEffects.sampleFromFC(ycorr, data.Z, data.ZPZdiag, data.Rsqrt, data.weightedRes, sigmaSq.value, pi.value, vare.value, ghat);
+        snpEffects.sampleFromFC(ycorr, data.genotype(), data.ZPZdiag, data.Rsqrt, data.weightedRes, sigmaSq.value, pi.value, vare.value, ghat);
        if (++cnt == 100) LOGGER.e(0," Zero SNP effect in the model for 100 cycles of sampling");
    } while (snpEffects.numNonZeros == 0);
     snpPip.getValues(snpEffects.pip);
     sigmaSq.sampleFromFC(snpEffects.sumSq, snpEffects.numNonZeros);
     //scale.sampleFromFC(sigmaSq.value, sigmaSq.df, sigmaSq.scale);
     if (estimatePi) pi.sampleFromFC(snpEffects.size, snpEffects.numNonZeros);
-    vare.sampleFromFC(ycorr);
+    if (!data.fixedResidual) vare.sampleFromFC(ycorr);
     
     varg.compute(ghat);
+    if (data.matchedGWAS) varg.value *= data.numKeptInds/(data.numKeptInds-1.0);
     hsq.compute(varg.value, vare.value);
     
-    rounding.computeYcorr(data.y, data.X, data.W, data.Z, fixedEffects.values, randomEffects.values, snpEffects.values, ycorr);
+    rounding.computeYcorr(data.y, data.X, data.W, data.genotype(), fixedEffects.values, randomEffects.values, snpEffects.values, ycorr);
     nnzSnp.getValue(snpEffects.numNonZeros);
 }
 
@@ -399,7 +396,7 @@ void BayesR::NumSnpMixComps::getValues(const VectorXd &snpStore) {
     }
 }
 
-void BayesR::VgMixComps::compute(const VectorXd &snpEffects, const MatrixXd &Z, const vector<vector<unsigned> > snpset, const double varg) {
+void BayesR::VgMixComps::compute(const VectorXd &snpEffects, const GenotypeView &Z, const vector<vector<unsigned> > snpset, const double varg) {
     values.setZero(ndist);
     long nobs = Z.rows();
 //    for (unsigned k=0; k<ndist; ++k) {
@@ -438,7 +435,7 @@ void BayesR::VgMixComps::compute(const VectorXd &snpEffects, const MatrixXd &Z, 
 
 }
 
-void BayesR::SnpEffects::sampleFromFC(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
+void BayesR::SnpEffects::sampleFromFC(VectorXd &ycorr, const GenotypeView &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
                                       const double sigmaSq, const VectorXd &pis, const VectorXd &gamma,
                                       const double vare, VectorXd &ghat, VectorXd &snpStore,
                                       const double varg, const bool originalModel){
@@ -481,7 +478,7 @@ void BayesR::SnpEffects::sampleFromFC(VectorXd &ycorr, const MatrixXd &Z, const 
         // ----------------------------------------------------
         // Add back the content for the corrected rhs for SNP k
         // ----------------------------------------------------
-        rhs = Z.col(i).dot(ycorr);
+        rhs = ParallelGibbs::dot(Z.col(i),ycorr);
         oldSample = values[i];
         rhs += ZPZdiag[i] * oldSample;
         // ------------------------------------------------------
@@ -526,13 +523,13 @@ void BayesR::SnpEffects::sampleFromFC(VectorXd &ycorr, const MatrixXd &Z, const 
         {
             v1 = ZPZdiag[i] + vare / gp((indistflag - 1));
             values[i] = normal.sample(rhs / v1, vare / v1);
-            ycorr += Z.col(i) * (oldSample - values[i]);
+            ParallelGibbs::axpy(Z.col(i),oldSample-values[i],ycorr);
             if (weightedRes) ghat += Z.col(i).cwiseProduct(Rsqrt) * values[i];
-            else ghat  += Z.col(i) * values[i];
+            else ParallelGibbs::axpy(Z.col(i),values[i],ghat);
             sumSq += (values[i] * values[i]) / gamma[indistflag - 1];
             ++numNonZeros;
         } else {
-            if (oldSample) ycorr += Z.col(i) * oldSample;
+            if (oldSample) ParallelGibbs::axpy(Z.col(i),oldSample,ycorr);
             values[i] = 0.0;
         }
     }
@@ -554,17 +551,18 @@ void BayesR::sampleUnknowns(){
     }
     unsigned cnt=0;
     do {
-        snpEffects.sampleFromFC(ycorr, data.Z, data.ZPZdiag, data.Rsqrt, data.weightedRes, sigmaSq.value, Pis.values, gamma.values, vare.value, ghat, snpStore, varg.value, originalModel);
+        snpEffects.sampleFromFC(ycorr, data.genotype(), data.ZPZdiag, data.Rsqrt, data.weightedRes, sigmaSq.value, Pis.values, gamma.values, vare.value, ghat, snpStore, varg.value, originalModel);
         if (++cnt == 100) LOGGER.e(0,"Error: Zero SNP effect in the model for 100 cycles of sampling");
     } while (snpEffects.numNonZeros == 0);  
     sigmaSq.sampleFromFC(snpEffects.sumSq, snpEffects.numNonZeros);
-    vare.sampleFromFC(ycorr);
+    if (!data.fixedResidual) vare.sampleFromFC(ycorr);
     Pis.sampleFromFC(snpStore);
     numSnps.getValues(snpStore);
     varg.compute(ghat);
+    if (data.matchedGWAS) varg.value *= data.numKeptInds/(data.numKeptInds-1.0);
     hsq.compute(varg.value, vare.value);
-    if (originalModel) Vgs.compute(snpEffects.values, data.Z, snpEffects.snpset, varg.value);
-    rounding.computeYcorr(data.y, data.X, data.W, data.Z, fixedEffects.values, randomEffects.values, snpEffects.values, ycorr);
+    if (originalModel) Vgs.compute(snpEffects.values, data.genotype(), snpEffects.snpset, varg.value);
+    rounding.computeYcorr(data.y, data.X, data.W, data.genotype(), fixedEffects.values, randomEffects.values, snpEffects.values, ycorr);
     nnzSnp.getValue(snpEffects.numNonZeros);
 }
 
@@ -615,7 +613,7 @@ void ApproxBayesC::SnpEffects::sampleFromFC(VectorXd &rcorr,const vector<SparseV
         nrnd[i] = Stat::snorm();
     }
     
-#pragma omp parallel for
+#pragma omp parallel for num_threads(ParallelGibbs::workers(numChr)) if(numChr>1)
     for (unsigned chr=0; chr<numChr; ++chr) {
         //LOGGER << " thread " << omp_get_thread_num() << " chr " << chr << endl;
         
@@ -729,7 +727,7 @@ void ApproxBayesC::SnpEffects::sampleFromFC(VectorXd &rcorr,const vector<VectorX
         nrnd[i] = Stat::snorm();
     }
     
-#pragma omp parallel for
+#pragma omp parallel for num_threads(ParallelGibbs::workers(numChr)) if(numChr>1)
     for (unsigned chr=0; chr<numChr; ++chr) {
         //LOGGER << " thread " << omp_get_thread_num() << " chr " << chr << endl;
         
@@ -943,7 +941,7 @@ void ApproxBayesC::SnpEffects::sampleFromFC(vector<VectorXd> &wcorrBlocks, const
     double invSigmaSq = 1.0/sigmaSq;
 
     
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) num_threads(ParallelGibbs::workers(nBlocks)) if(nBlocks>1)
     for(unsigned blk = 0; blk < nBlocks; blk++){
         Ref<const MatrixXd> Q = Qblocks[blk];
         Ref<VectorXd> wcorr = wcorrBlocks[blk];
@@ -1302,67 +1300,8 @@ void ApproxBayesC::checkHsq(vector <double>  &hsqMCMC) {
 
 }
 
-
-void ApproxBayesC::NumBadSnps::compute_eigen(VectorXi &badSnps, VectorXd &effects, VectorXd &effectMean, const VectorXd &b, 
-    vector<VectorXd> &wcorrBlocks, const vector<MatrixXd> &Qblocks, const vector<LDBlockInfo*> keptLdBlockInfoVec, const int iter) {
-    if(iter == 0) LOGGER << "Computing NumBadSnps based on GWAS marginal and joint effects..." << endl;
-    
-    value = 0;
-    
-    float rate_thresh1 = 0, rate_thresh2 = 0;
-    if(iter < 300){
-        rate_thresh1 = 4.0;
-        rate_thresh2 = 2.0;
-    }else if(iter < 600){
-        rate_thresh1 = 3.0;
-        rate_thresh2 = 1.5;
-    }else if(iter < 900){
-        rate_thresh1 = 2.0;
-        rate_thresh2 = 1.3;
-    }else{
-        rate_thresh1 = 1.5;
-        rate_thresh2 = 1.1;
-    }
-    
-    unsigned nBlocks = Qblocks.size();
-    for(unsigned blk = 0; blk < nBlocks; blk++){
-        Ref<const MatrixXd> Q = Qblocks[blk];
-        Ref<VectorXd> wcorr = wcorrBlocks[blk];
-        
-        LDBlockInfo *blockInfo = keptLdBlockInfoVec[blk];
-        
-        unsigned blockStart = blockInfo->startSnpIdx;
-        unsigned blockEnd   = blockInfo->endSnpIdx;
-        
-        for(unsigned i = blockStart; i <= blockEnd; i++){
-            if (badSnps[i]) {
-                continue;
-            }
-            
-            double rate_b = abs((effectMean[i] - b[i])/b[i]);
-            bool sameSign = (b[i] >= 0.0f) == (effectMean[i] >= 0.0f);
-            double compare_rate = sameSign ? rate_thresh1 : rate_thresh2;
-
-            if(abs(effectMean[i]) > betaThresh && rate_b > compare_rate){
-                //cout << "DEL:" << "\t" << betaVal << "\t" << b[idx] << "\t" << rate_b << "\t" << compare_rate << std::endl;
-                Ref<const VectorXd> Qi = Q.col(i - blockStart);
-                wcorr = wcorr + Qi * effects[i];
-                effects[i] = 0.0;
-                effectMean[i] = 0.0;
-                badSnps[i] = 1;
-                badSnpIdx.push_back(i);
-                badSnpName.push_back(snpNames[i]);
-                if (writeTxt) out << i+1 << "\t" << snpNames[i] << endl;
-                ++value;
-            }
-        }
-    }
-}
-
-
-
 void ApproxBayesC::sampleUnknowns(){
-    static int iter = 0;
+    auto &iter = mcmcIteration;
 //    fixedEffects.sampleFromFC(data.XPX, data.XPXdiag, data.ZPX, data.XPy, snpEffects.values, vare.value, rcorr);
     unsigned cnt=0;
     //do {
@@ -1398,22 +1337,25 @@ void ApproxBayesC::sampleUnknowns(){
         sigmaSqG.value = sigmaSq.value * snpEffects.numNonZeros;
     }
 
-    if (lowRankModel) {
+    if (data.matchedGWAS) {
+        sampleMatchedVariances(snpEffects.values, rcorr, whatBlocks, vare, varg, vareBlk, vargBlk);
+    }
+    else if (lowRankModel) {
         vargBlk.compute(whatBlocks);
-        vareBlk.sampleFromFC(wcorrBlocks, snpEffects.ssqBlocks, data.nGWASblock, data.numEigenvalBlock);
+        if (!data.fixedResidual) vareBlk.sampleFromFC(wcorrBlocks, snpEffects.ssqBlocks, data.nGWASblock, data.numEigenvalBlock);
         varg.value = vargBlk.total;
-        vare.value = vareBlk.mean;
+        if (!data.fixedResidual) vare.value = vareBlk.mean;
     }
     else {
         covg.compute(data.ypy, snpEffects.values, data.ZPy, rcorr);
         varg.compute(snpEffects.values, data.ZPy, rcorr, covg.value);
         //    varg.value = sigmaSqG.value;
-        vare.sampleFromFC(data.ypy, snpEffects.values, data.ZPy, rcorr, covg.value);
+        if (!data.fixedResidual) vare.sampleFromFC(data.ypy, snpEffects.values, data.ZPy, rcorr, covg.value);
     }
     //hsq.compute(varg.value, vare.value);
-    hsq.value = varg.value / data.varPhenotypic;
+    hsq.value = data.matchedGWAS ? varg.value/(varg.value+vare.value) : varg.value/data.varPhenotypic;
 
-    if (iter >= 2000) sigmaSq.scale = scalePrior;
+    if (!data.matchedGWAS && iter >= 2000) sigmaSq.scale = scalePrior;
     //sigmaSq.scale = scalePrior;
     scale.getValue(sigmaSq.scale);
         
@@ -1458,7 +1400,7 @@ void ApproxBayesC::sampleUnknowns(){
 
 void ApproxBayesR::sampleUnknowns(){
     //sigmaSq.value = 0.000275;   // TMP_JZ
-    static int iter = 0;
+    auto &iter = mcmcIteration;
 //    fixedEffects.sampleFromFC(data.XPX, data.XPXdiag, data.ZPX, data.XPy, snpEffects.values, vare.value, rcorr);
     unsigned cnt=0;
     //do {
@@ -1503,7 +1445,10 @@ void ApproxBayesR::sampleUnknowns(){
     sigmaSqG.compute(sigmaSq.value, snpEffects.sum2pq);
 
     if (estimateHsq) {
-        if (data.Z.size()) {   // TMP_JZ
+        if (data.matchedGWAS) {
+            sampleMatchedVariances(snpEffects.values, rcorr, whatBlocks, vare, varg, vareBlk, vargBlk);
+        }
+        else if (data.Z.size()) {   // TMP_JZ
             //        ghat.setZero(data.Z.rows());
             //        for (unsigned i=0; i<snpEffects.size; ++i) {
             //            if (snpEffects.values[i]) ghat += data.Z.col(i)*snpEffects.values[i];
@@ -1511,27 +1456,27 @@ void ApproxBayesR::sampleUnknowns(){
             varg.value = Gadget::calcVariance(ghat);
             double n_ref = data.Z.rows();
             double n_ratio = n_ref/double(data.numKeptInds);
-            vare.value = (data.ypy*n_ratio - 2.0f*snpEffects.values.dot(data.ZPy)*n_ratio + ghat.dot(ghat))/n_ref;
+            if (!data.fixedResidual) vare.value = (data.ypy*n_ratio - 2.0f*snpEffects.values.dot(data.ZPy)*n_ratio + ghat.dot(ghat))/n_ref;
             //cout << "varg " << varg.value << " vare " << vare.value << endl;
             //cout << "n_ratio " << n_ratio << " ypy " << data.ypy*n_ratio << " ypg " << 2.0f*snpEffects.values.dot(data.ZPy)*n_ratio << " gpg " << ghat.dot(ghat) << " n_ref " << n_ref << endl;
         }
         else if (lowRankModel) {
             vargBlk.compute(whatBlocks);
-            vareBlk.sampleFromFC(wcorrBlocks, snpEffects.ssqBlocks, data.nGWASblock, data.numEigenvalBlock);
+            if (!data.fixedResidual) vareBlk.sampleFromFC(wcorrBlocks, snpEffects.ssqBlocks, data.nGWASblock, data.numEigenvalBlock);
             varg.value = vargBlk.total;
-            vare.value = vareBlk.mean;
+            if (!data.fixedResidual) vare.value = vareBlk.mean;
         }
         else {
             covg.compute(data.ypy, snpEffects.values, data.ZPy, rcorr);
             varg.compute(snpEffects.values, data.ZPy, rcorr, covg.value);
-            vare.sampleFromFC(data.ypy, snpEffects.values, data.ZPy, rcorr, covg.value);
+            if (!data.fixedResidual) vare.sampleFromFC(data.ypy, snpEffects.values, data.ZPy, rcorr, covg.value);
         }
         
         //hsq.compute(varg.value, vare.value);
-        hsq.value = varg.value / data.varPhenotypic;
+        hsq.value = data.matchedGWAS ? varg.value/(varg.value+vare.value) : varg.value/data.varPhenotypic;
     }
     
-    if (iter >= 2000) sigmaSq.scale = scalePrior;
+    if (!data.matchedGWAS && iter >= 2000) sigmaSq.scale = scalePrior;
     scale.getValue(sigmaSq.scale);
     // cout << "iter " << iter << " scalePrior " << scalePrior << "sigmaSq.scale " << sigmaSq.scale << endl;
 
@@ -1701,7 +1646,7 @@ void ApproxBayesR::SnpEffects::sampleFromFC(VectorXd &rcorr, const vector<Sparse
     // Cycle over all variants in the window and sample the genetics effects
     // --------------------------------------------------------------------------------
 
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) num_threads(ParallelGibbs::workers(numChr)) if(numChr>1)
     for (unsigned chr=0; chr<numChr; ++chr) 
     {
         ChromInfo *chromInfo = chromInfoVec[chr];
@@ -1887,7 +1832,7 @@ void ApproxBayesR::SnpEffects::sampleFromFC(VectorXd &rcorr, const vector<Vector
     // Cycle over all variants in the window and sample the genetics effects
     // --------------------------------------------------------------------------------
 
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) num_threads(ParallelGibbs::workers(numChr)) if(numChr>1)
     for (unsigned chr=0; chr<numChr; ++chr) 
     {
         ChromInfo *chromInfo = chromInfoVec[chr];
@@ -2348,7 +2293,7 @@ void ApproxBayesR::SnpEffects::sampleFromFC(vector<VectorXd> &wcorrBlocks, const
     // Cycle over all variants in the window and sample the genetics effects
     // --------------------------------------------------------------------------------
 
-    #pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(dynamic) num_threads(ParallelGibbs::workers(nBlocks)) if(nBlocks>1)
     for(unsigned blk = 0; blk < nBlocks; blk++){
         Ref<const MatrixXd> Q = Qblocks[blk];
         Ref<VectorXd> wcorr = wcorrBlocks[blk];
@@ -2428,3 +2373,33 @@ void ApproxBayesR::SnpEffects::sampleFromFC(vector<VectorXd> &wcorrBlocks, const
 
 }
 
+
+void ApproxBayesC::sampleMatchedVariances(const VectorXd &effects, const VectorXd &summaryResidual,
+                                        const vector<VectorXd> &pcFitted, BayesC::ResidualVar &residual,
+                                        Parameter &genetic, BlockResidualVar &residualBlocks,
+                                        BlockGenotypicVar &geneticBlocks) {
+    const double gram = data.numKeptInds-1.0;
+    double geneticSS = 0.0, phenotypeCross = 0.0;
+    if (lowRankModel) {
+        for (unsigned k=0; k<pcFitted.size(); ++k) {
+            geneticBlocks.values[k] = pcFitted[k].squaredNorm();
+            geneticSS += gram*geneticBlocks.values[k];
+            phenotypeCross += gram*pcFitted[k].dot(data.wcorrBlocks[k]);
+        }
+    } else {
+        geneticSS = effects.dot(data.ZPy-summaryResidual);
+        phenotypeCross = effects.dot(data.ZPy);
+    }
+    // The intercept is independent of centered marker effects, but contributes to residual SSE.
+    const double intercept = Stat::snorm()*sqrt(residual.value/data.numKeptInds);
+    double sse = data.ypy - 2.0*phenotypeCross + geneticSS + data.numKeptInds*intercept*intercept;
+    if (sse < -1e-8*data.ypy) throw string("Negative exact GWAS residual SSE: inconsistent LD/summary inputs.");
+    sse = std::max(0.0,sse);
+    if (!data.fixedResidual) residual.value = residual.sample(residual.df+data.numKeptInds, sse+residual.df*residual.scale);
+    genetic.value = geneticSS/gram;
+    if (lowRankModel) {
+        residualBlocks.values.setConstant(residual.value);
+        residualBlocks.mean = residual.value;
+        geneticBlocks.total = genetic.value;
+    }
+}

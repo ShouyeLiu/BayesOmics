@@ -191,12 +191,12 @@ VectorXd Gadget::calColMeans(const vector<VectorXd> &vecVec){
 }
 
 double Gadget::calcVariance(const VectorXd &vec){
-    return (vec.array() - vec.mean()).square().sum()/ (vec.size() -1 );
+    return (vec.array() - vec.mean()).square().sum()/ (vec.size() );
 }
 
 double Gadget::calcVariance(const vector<double> &vec){
     Eigen::VectorXd vecXd = Eigen::Map<const Eigen::VectorXd>(vec.data(), vec.size());
-    return (vecXd.array() - vecXd.mean()).square().sum()/ (vecXd.size() -1 );
+    return (vecXd.array() - vecXd.mean()).square().sum()/ (vecXd.size() );
 }
 
 double Gadget::calcVariance(const vector<VectorXd> &vec){
@@ -275,6 +275,18 @@ bool Gadget::checkScaleMatrix(const arma::dmat& Psi,const double nu, const bool 
 
     // If all checks pass
     return true;
+}
+
+std::vector<float> Gadget::packUpperTriColMajor(const MatrixXf& mat) {
+    int n = mat.rows();
+    std::vector<float> out;
+    out.reserve((size_t)n * (n+1) / 2);
+    for (int j = 0; j < n; j++) {       // column-major
+        for (int i = 0; i <= j; i++) {
+            out.push_back(mat(i,j));
+        }
+    }
+    return out;
 }
 
 // Function to check if a matrix is symmetric

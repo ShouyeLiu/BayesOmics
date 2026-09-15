@@ -1,0 +1,12 @@
+if(CASE STREQUAL "sampler")
+  set(args --sbayes CO --mcmc-type UNAVAILABLE)
+  set(expected "supports EIEO only")
+else()
+  set(args --sbayes UNAVAILABLE --mcmc-type EIEO)
+  set(expected "not part of this public release")
+endif()
+execute_process(COMMAND "${BINARY}" ${args} --out "${CMAKE_CURRENT_BINARY_DIR}/reject-${CASE}"
+  RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(status EQUAL 0 OR NOT "${output}${error}" MATCHES "${expected}")
+  message(FATAL_ERROR "Unexpected result: ${status}\n${output}\n${error}")
+endif()

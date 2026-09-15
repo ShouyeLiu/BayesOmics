@@ -120,8 +120,10 @@ double calcRegression(const VectorXd &y, const VectorXd &x);
 double calcPvalFromZ(double z);
 double findMedian(const VectorXd &vec);
 
-/// check 
+/// matrix related
 bool checkScaleMatrix(const arma::dmat& Psi, const double nu,const bool messageBool);
+// Flatten upper-triangular part (column-major order)
+std::vector<float> packUpperTriColMajor(const MatrixXf& mat);
 
 bool isSymmetric(const Matrix2d& A, double tol = 1e-6);
 Matrix2d makeSymmetricPositiveDefinite(Matrix2d A, double epsilon = 1e-6);

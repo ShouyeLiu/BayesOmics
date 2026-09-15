@@ -546,7 +546,7 @@ void Data::readSingleEsdFile(const string geneID,const string singleGenePheFile,
     string id, allele1, allele2;
     int chr, physPos;
     double genPos = 0;
-    double allele1Freq,beta,se, eqtl_n;
+    double allele1Freq,beta,se, eqtl_n=-999;
     int idx = 0;
     int line = 0;
     double p;
@@ -594,6 +594,7 @@ void Data::readSingleEsdFile(const string geneID,const string singleGenePheFile,
         if(gene->cisSnpIDSetInGene.find(eqtl->rsID) != gene->cisSnpIDSetInGene.end()){
             LOGGER.w(0, " Duplicate SNP ID found: \"" + id + "\" in the file [ " + filename + " ].");
         }
+        gene->eQTLPvalVec.push_back(p);
         eQTLMarginEffect.push_back(beta);
         eQTLMarginEffectSE.push_back(se);
         gene->hasEqtl = true;
@@ -1184,9 +1185,10 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
     // header: GeneID   GeneChr GeneStart       GeneEnd GenePhyPos      SNPID   SNPChr  PhyPos  A1      A2      A1Freq  BETA    SE      Chisq   LOG10P  N
     auto startTime = std::chrono::steady_clock::now();
     while (getline(in,inputStr)) {
-        // Gadget::showProgressBar(line, totalLines, startTime,"Read xQTL info from query.gz format");
+        Gadget::showProgressBar(line, totalLines, startTime,"Read xQTL info from query.gz format");
         if (inputStr.empty()) {continue;}
         colData.getTokens(inputStr, sep);
+        if(colData.size()!=14) throw std::runtime_error("Query row must contain 14 columns");
         geneID = colData[0];
         geneChr = boost::lexical_cast<int>(colData[1]);
         geneLength = boost::lexical_cast<int>(colData[2]);
@@ -1206,6 +1208,10 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
             continue;
         }
         sampleSize  = boost::lexical_cast<int>(colData[13]);
+        if(!std::isfinite(beta) || !std::isfinite(se) || se<=0 || !std::isfinite(a1freq) || a1freq<0 || a1freq>1 || pvalue<0 || pvalue>1)
+            throw std::runtime_error("Invalid query effect, SE, frequency or P value");
+        if(geneInfoMapLocal.count(geneID) && geneID!=lastGeneID)
+            throw std::runtime_error("Query rows for each gene must be contiguous: "+geneID);
         //////////////////////////////////////////////////////////
         /// remove snps 
         if(hasSnpInfo) {
@@ -1229,7 +1235,7 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
                 gene->sampleSizeSD = Gadget::calculateStandardDeviation(gene->cisSnpSampleSizeMap,gene->sampleSize);
                 eQTLMarginEffect.clear();
                 eQTLMarginEffectSE.clear();
-                if(gene->eQTLMarginEffect.size() > 1) gene->hasEqtl = true;
+                if(gene->eQTLMarginEffect.size() > 0) gene->hasEqtl = true;
             }
             // Not found gene, we need to create a new one
             gene = new GeneInfo(geneIdx++, geneID, geneChr);
@@ -1254,6 +1260,10 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
             gene->cisSnpID2IdxMapInGene.insert(pair<string,int>(eqtl->rsID,eqtlInGene));
             gene->cisSnpSampleSizeMap.insert(pair<string,int>(eqtl->rsID,sampleSize));
             // gene->sampleSize = 
+            eQTLMarginEffect.push_back(beta);
+            eQTLMarginEffectSE.push_back(se);
+            lastGeneID = geneID;
+            eqtl->isInGene = true;
             /////////////////////////////////////
             /// check consistency of allele
             if(hasSnpInfo) {
@@ -1273,10 +1283,7 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
                     }
                 } // end of iterSnp.
             }
-            eQTLMarginEffect.push_back(beta);
-            eQTLMarginEffectSE.push_back(se);
-            lastGeneID = geneID;
-            eqtl->isInGene = true;
+            
             ////////////////////////////////////////
         } else {
             // Found gene, now add SNPs to the gene
@@ -1321,6 +1328,9 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
             }
             ////////////////////////////////////////
         }
+        if(gene->cisSnpNameVec.size()!=gene->cisSnpIDSetInGene.size())
+            throw std::runtime_error("Duplicate gene-SNP query row: "+geneID+" "+snpID);
+        gene->eQTLPvalVec.push_back(static_cast<double>(pvalue));
         line++;
     } // end of while
     // for the last gene after ending the loop
@@ -1330,14 +1340,14 @@ void Data::readQeuryGZFormat(const string &eqtlSummaryQueryFile,vector<GeneInfo 
         gene->eQTLMarginEffectSE = Eigen::Map<VectorXd>(&eQTLMarginEffectSE[0], eQTLMarginEffectSE.size());
         gene->sampleSize = Gadget::calculateMean(gene->cisSnpSampleSizeMap);
         gene->sampleSizeSD = Gadget::calculateStandardDeviation(gene->cisSnpSampleSizeMap,gene->sampleSize);
-        if(gene->eQTLMarginEffect.size() > 1) gene->hasEqtl = true;
+        if(gene->eQTLMarginEffect.size() > 0) gene->hasEqtl = true;
     }
     // summary data quality
     if(hasSnpInfo) {
         numEqtlFlip = flipSet.size();
         numInconsistent2GWAS = removeSNPset.size();
         if(numInconsistent2GWAS) LOGGER << numInconsistent2GWAS << " SNPs that cannot be found in GWAS LD reference are removed." << endl;
-        if (numEqtlFlip) LOGGER << "flipped " << numEqtlFlip << " SNPs in molQTL data according to the minor allele in the GWAS LD reference." << endl;
+        if (numEqtlFlip) LOGGER << "flipped " << numEqtlFlip << " SNPs according to the minor allele in the reference and GWAS samples." << endl;
         if(numInconAllele) LOGGER << "" << numInconAllele << " inconsistent SNPs will be removed based on GWAS LD reference and samples." << endl;
     }
 
@@ -1365,6 +1375,7 @@ void Data::saveBesdFormat(const string title,const bool makeBesdSmrBool){
     //////////////////////////////////////////////
     string esdfile = title + ".esi";
     ofstream smr(esdfile.c_str());
+    smr << std::setprecision(17);
     if (!smr) LOGGER.e(0,"Can not open the ESI file " + esdfile + " to save!");
     for (int i = 0;i < numIncdEqtls; i++) {
         EqtlInfo *eqtl = incdEqtlInfoVec[i];
@@ -1565,7 +1576,7 @@ void Data::saveAnnoPlainMatFormat(const string title, const bool isBinary,const 
     ofstream anno(esdfile.c_str());
     if (!anno) LOGGER.e(0," Can not open the anno file [" + esdfile + "] to save!");
     EqtlInfo * eqtl;
-    SnpInfo *snp;
+    SnpInfo *snp = NULL;
     GeneInfo * gene;
     map<string, EqtlInfo* >::iterator iterEqtl;
     int eqtlIdx;
@@ -1673,35 +1684,13 @@ void Data::saveQueryMoQTLInfo(const string title){
             pvalue.str("");
             samSize.str("");
             // cout << gene->eQTLMarginEffect.size() << endl; 
-            if(abs(gene->eQTLMarginEffect(eqtlIdx) ) < 1e-6 ){
-                beta << std::scientific << std::setprecision(5) << gene->eQTLMarginEffect(eqtlIdx);
-            } else{
-                beta << std::fixed << std::setprecision(15) << gene->eQTLMarginEffect(eqtlIdx);
-            }
-            // se
-            if(abs(gene->eQTLMarginEffectSE(eqtlIdx)) < 1e-6 ){
-                se << std::scientific << std::setprecision(5) << gene->eQTLMarginEffectSE(eqtlIdx);
-            } else{
-                se << std::fixed << std::setprecision(15) << gene->eQTLMarginEffectSE(eqtlIdx);
-            }
-            if(abs(gene->eQTLMarginEffectSE(eqtlIdx)) > 1e-6){
-                chiBuf = gene->eQTLMarginEffect(eqtlIdx)/gene->eQTLMarginEffectSE(eqtlIdx);
-                chisqBuf = chiBuf * chiBuf;
-                pValueBuf = Stat::ChiSq::pchisq(chisqBuf,1);
-            }
-            // chisq
-            if(abs(chisqBuf) < 1e-6 ){
-                chisq << std::scientific << std::setprecision(3) << chisqBuf;
-            } else{
-                chisq << std::fixed << std::setprecision(9) << chisqBuf;
-            }
-            // pvalue
-            if(abs(pValueBuf) < 1e-6 ){
-                if(pValueBuf == 0) pValueBuf = std::numeric_limits<double>::min();
-                pvalue << std::scientific << std::setprecision(3) << (pValueBuf);
-            } else{
-                pvalue << std::fixed << std::setprecision(9) << (pValueBuf);
-            }
+            beta << std::setprecision(17) << gene->eQTLMarginEffect(eqtlIdx);
+            se << std::setprecision(17) << gene->eQTLMarginEffectSE(eqtlIdx);
+            const double z=gene->eQTLMarginEffect(eqtlIdx)/gene->eQTLMarginEffectSE(eqtlIdx);
+            pValueBuf=gene->eQTLPvalVec.size()==size_t(gene->eQTLMarginEffect.size()) ?
+                gene->eQTLPvalVec[eqtlIdx] : Stat::ChiSq::pchisq(z*z,1);
+            pvalue << std::setprecision(17) << pValueBuf;
+            std::ostringstream frequency; frequency << std::setprecision(17) << eqtl->af;
 
             // sample size 
             samSize.str("");
@@ -1726,7 +1715,7 @@ void Data::saveQueryMoQTLInfo(const string title){
 
             dataStream << gene->ensemblID + "\t" + to_string(gene->chrom) + "\t" + to_string(gene->geneLength) + "\t" + genePhyPosRound.str() + "\t" +
                         eqtl->rsID + "\t" + to_string(eqtl->chrom) + "\t" + to_string(eqtl->physPos) + "\t" + 
-                        eqtl->a1 + "\t" + eqtl->a2 + "\t" + to_string(eqtl->af) + "\t" +
+                        eqtl->a1 + "\t" + eqtl->a2 + "\t" + frequency.str() + "\t" +
                         beta.str() + "\t" + se.str() + "\t" + 
                         pvalue.str() + "\t" + samSize.str() + 
                         "\n";           
@@ -2423,8 +2412,10 @@ void Data::mergeMultiBesdData(const string besdListFile,const string title){
         eqtlInfoMapLocal.clear();
         epiBool = readMultiEpiFile(oneFile + ".epi", geneInfoVecLocal,geneInfoMapLocal,hasSnpInfo,hasGeneLdmInfo);
         esiBool = readMultiEsiFile(oneFile + ".esi",eqtlInfoVecLocal, eqtlInfoMapLocal,smrBesdBool,hasSnpInfo,hasGeneLdmInfo);
+        besdBool=false;
         if(epiBool && esiBool)
             besdBool = readMultiBesdFile(oneFile + ".besd",geneInfoVecLocal,geneInfoMapLocal,eqtlInfoVecLocal, eqtlInfoMapLocal,smrBesdBool,hasSnpInfo,hasGeneLdmInfo);
+        if(!besdBool) throw std::runtime_error("Cannot merge invalid BESD input: "+oneFile);
         if(besdBool){
             curSnpLengthInGene = 0;
             for(unsigned j = 0; j < geneInfoVecLocal.size();j++){
@@ -2433,7 +2424,9 @@ void Data::mergeMultiBesdData(const string besdListFile,const string title){
                 if(iterGene != geneInfoMap.end()){
                     // already exists
                     // snpName;
-                    iterGene->second->cisSnpNameVec.insert(iterGene->second->cisSnpNameVec.begin(),gene->cisSnpNameVec.begin(),gene->cisSnpNameVec.end());
+                    for(const auto &id:gene->cisSnpNameVec) if(iterGene->second->cisSnpIDSetInGene.count(id))
+                        throw std::runtime_error("Duplicate gene-SNP pair in BESD merge: "+gene->ensemblID+" "+id);
+                    iterGene->second->cisSnpNameVec.insert(iterGene->second->cisSnpNameVec.end(),gene->cisSnpNameVec.begin(),gene->cisSnpNameVec.end());
                     // 1. beta 
                     iterGene->second->eQTLMarginEffect.conservativeResize(iterGene->second->numSnpInGene + gene->numSnpInGene);
                     iterGene->second->eQTLMarginEffect.segment(iterGene->second->numSnpInGene,gene->numSnpInGene) = gene->eQTLMarginEffect;
@@ -2460,7 +2453,9 @@ void Data::mergeMultiBesdData(const string besdListFile,const string title){
                 iterEqtl = eqtlInfoMap.find(eqtl->rsID);
                 if(iterEqtl != eqtlInfoMap.end()){
                     // already exists
-                    // LOGGER.e(0,"Error: duplicated ID " + eqtl->rsID  + " is found.");
+                    auto previous=iterEqtl->second;
+                    if(previous->chrom!=eqtl->chrom || previous->physPos!=eqtl->physPos || previous->a1!=eqtl->a1 || previous->a2!=eqtl->a2)
+                        throw std::runtime_error("Incompatible SNP metadata in BESD merge: "+eqtl->rsID);
                 } else {
                     eqtlInfoVec.push_back(eqtl);
                     eqtlInfoMap.insert(pair<string, EqtlInfo *>(eqtl->rsID,eqtl));
@@ -2633,7 +2628,7 @@ bool Data::readMultiEsiFile(const string &esiFile,vector<EqtlInfo *> &eqtlInfoVe
     // summary
     if(hasGeneLdmInfo) {
         numEqtlFlip = numFlip;
-        if (numFlip) LOGGER << "flipped " << numFlip << " SNPs in molQTL according to the minor allele in the GWAS reference." << endl;
+        if (numFlip) LOGGER << "flipped " << numFlip << " SNPs according to the minor allele in the reference and GWAS samples." << endl;
     }
 
     return true;
@@ -2651,7 +2646,7 @@ bool Data::readMultiBesdFile(const string &besdFile,vector<GeneInfo *> &geneInfo
     char SIGN[sizeof(uint64_t)+8];
     besd.read(SIGN,4);
     uint32_t header = *(uint32_t *)SIGN;
-    if(header == 0x40000000 & header == 0x3f800000){
+    if(header == 0x40000000 || header == 0x3f800000){
          LOGGER.w(0, "This is an old BESD format. Please use smr --make-besd command to update the file format." );
         //  exit(1);
         return false;
@@ -2753,6 +2748,16 @@ bool Data::readMultiBesdFile(const string &besdFile,vector<GeneInfo *> &geneInfo
         float* val_ptr=(float*)ptr4B;
         for(int i=0;i<valNum;i++){_val(i) =*val_ptr++;}
 
+        if(_cols.empty() || _cols.front()!=0 || _cols.back()!=valNum || !std::is_sorted(_cols.begin(),_cols.end())) {
+            free(buffer);throw std::runtime_error("Invalid BESD sparse column offsets");
+        }
+        for(size_t j=0;j+2<_cols.size();j+=2) {
+            const uint64_t count=_cols[j+1]-_cols[j];
+            if(count!=_cols[j+2]-_cols[j+1]) {free(buffer);throw std::runtime_error("BESD beta/SE counts differ");}
+            for(uint64_t k=0;k<count;++k) if(_rowid[_cols[j]+k]>=numeQTLsLocal || _rowid[_cols[j]+k]!=_rowid[_cols[j+1]+k]) {
+                free(buffer);throw std::runtime_error("Invalid BESD beta/SE row indices");
+            }
+        }
         // Step 2. build a map to save eqtls passed QC
 
         map<int,string> eqtlIndxMap;
@@ -2864,10 +2869,12 @@ bool Data::readMultiBesdFile(const string &besdFile,vector<GeneInfo *> &geneInfo
         }
     }
 
-    geneInfoVecLocal  = makeKeptGeneInfoVec(geneInfoVecLocal);
-    numGenesLocal = (unsigned) geneInfoVecLocal.size();
-    eqtlInfoVecLocal = makeIncdEqtlInfoVec(eqtlInfoVecLocal);
-    numeQTLsLocal = (unsigned) eqtlInfoVecLocal.size();
+    // These are local file records, not the Data object's global vectors.
+    geneInfoVecLocal.erase(std::remove_if(geneInfoVecLocal.begin(),geneInfoVecLocal.end(),
+        [](GeneInfo* g){return !g->kept;}),geneInfoVecLocal.end());
+    eqtlInfoVecLocal.erase(std::remove_if(eqtlInfoVecLocal.begin(),eqtlInfoVecLocal.end(),
+        [](EqtlInfo* e){return !e->included;}),eqtlInfoVecLocal.end());
+    numGenesLocal=geneInfoVecLocal.size();numeQTLsLocal=eqtlInfoVecLocal.size();
 
     LOGGER<<"eQTL summary data of "<< numGenesLocal <<" Probes and "<< numeQTLsLocal <<" SNPs to be included from [" + besdFile + "]." << endl;
     return true;
@@ -3022,6 +3029,7 @@ void Data::mergeMultiEigenMat(const string title, const string besdListFile,cons
     if (geneBool && snpBool)
         binBool = readMultiEigenMatBinFile(oneFile + ".eigen.gene.bin",geneInfoVec,geneInfoMap,eqtlInfoVec, eqtlInfoMap,eigenCutoff);
 
+    if(!geneBool || !snpBool || !binBool) throw std::runtime_error("Invalid first gene LD input: "+oneFile);
     while(getline(in, oneFile)){
         if (oneFile.empty()) {continue;} // Skip the empty line
         geneInfoVecLocal.clear();
@@ -3035,6 +3043,7 @@ void Data::mergeMultiEigenMat(const string title, const string besdListFile,cons
         } else {
             binBool = false;
         }
+        if(!binBool) throw std::runtime_error("Invalid gene LD input: "+oneFile);
         if(binBool){
             curSnpLengthInGene = 0;
             for(unsigned j = 0; j < geneInfoVecLocal.size();j++){
@@ -3042,8 +3051,7 @@ void Data::mergeMultiEigenMat(const string title, const string besdListFile,cons
                 iterGene = geneInfoMap.find(gene->ensemblID);
                 if(iterGene != geneInfoMap.end()){
                     // already exists
-                    LOGGER.w(0, "Duplicate gene [ " + iterGene->second->ensemblID + " ] is found. Remove it");
-                    iterGene->second->kept = false;
+                    throw std::runtime_error("Duplicate gene in LD merge: "+gene->ensemblID);
                     // iterGene->second->eQTLMarginEffect.insert();
                 } else {
                     geneInfoVec.push_back(gene);
@@ -3079,70 +3087,60 @@ void Data::mergeMultiEigenMat(const string title, const string besdListFile,cons
     outputEigenMatIndInfoFromLDMat(LDMatType, title,true); 
 }
 
-bool Data::readMultiEigenMatInfoFile(const string title,vector<GeneInfo *> &geneInfoVecLD, map<string, GeneInfo *> &geneInfoMapLD){
-        // Read bim file: recombination rate is defined between SNP i and SNP i-1
-    ifstream in(title.c_str());
-    if (!in){
-        LOGGER.w(0, " can not open the file [" + title + "] to read.");
-        return false;
+void Data::writeGeneSnpMapFromAnnotation(const string &annotation, const string &output, double window) {
+    if(!std::isfinite(window) || window<0) throw std::runtime_error("Invalid cis window");
+    std::ifstream in(annotation); std::ofstream out(output);
+    if(!in || !out) throw std::runtime_error("Cannot open gene annotation or output map");
+    string line; std::getline(in,line);
+    out << "Chr Gene Start End Window SNP NumSnps\n" << std::setprecision(17);
+    std::map<int,std::vector<SnpInfo*>> chromosomes;
+    for(auto snp:incdSnpInfoVec) chromosomes[snp->chrom].push_back(snp);
+    for(auto &chr:chromosomes) std::stable_sort(chr.second.begin(),chr.second.end(),
+        [](SnpInfo* a,SnpInfo* b){return a->physPos<b->physPos;});
+    std::set<string> seen;
+    while(std::getline(in,line)) {
+        if(line.empty()) continue;
+        std::istringstream row(line); string chrText,id,extra; double start,end;
+        if(!(row>>chrText>>start>>end>>id) || (row>>extra) || !std::isfinite(start) || !std::isfinite(end) || start>end)
+            throw std::runtime_error("Malformed gene annotation row");
+        if(!seen.insert(id).second) throw std::runtime_error("Duplicate annotated gene: "+id);
+        if(chrText=="X" || chrText=="Y" || chrText=="MT" || chrText=="M") continue;
+        const int chr=std::stoi(chrText);
+        const double midpoint=(start+end)/2, lo=std::max(0.,midpoint-window),hi=midpoint+window;
+        const auto &snps=chromosomes[chr]; std::vector<string> ids;
+        auto it=std::lower_bound(snps.begin(),snps.end(),lo,[](SnpInfo* s,double bp){return s->physPos<bp;});
+        for(;it!=snps.end() && (*it)->physPos<=hi;++it) ids.push_back((*it)->rsID);
+        for(const auto &snp:ids) out<<chr<<' '<<id<<' '<<lo<<' '<<hi<<' '<<window<<' '<<snp<<' '<<ids.size()<<'\n';
     }
-    LOGGER << "Reading eigen gene info from file [" + title + "]." << endl;
-    // vector<GeneInfo*> geneInfoVecTmp;
-    // map<string, GeneInfo*> geneInfoMapTmp;
-    map<string,int> gene2snpMap;
-    string header;
-    string id;
-    int  chr, start, end, windows, snpNum;
-    int idx = 0;
-    int snpCount =  1;
-    string snp;
-    GeneInfo *gene;
-    map<string, GeneInfo*>::iterator iterGene;
-    map<string, EqtlInfo*>::iterator iterEqtl;
-    // Step 1. read gene info from ld gene matrix. In this step, if gene in LD file does not belong to 
-    // gene set in BESD file. gene->kept will be set as false;
-    getline(in, header);
-    while (in >>chr>>id >>start>>end>> windows >> snp >> snpNum ) {
-        if (gene2snpMap.insert(pair<string, int>(id + "_" + snp , snpCount)).second == false) {
-            LOGGER.w(0, " Duplicate LDBlock-SNP pair found: \"" + id + "_" + snp + "\".");
-            return false;
-        } else{
-            // Step 1.1 build a new geneInfo firstly
-            if(snpCount == 1){
-                gene = new GeneInfo(idx++, id, chr);
-                gene->start = start;
-                gene->end   = end;
-                gene->typSnpIdxBesd.clear(); // used to extract eqtl beta and se values;
-                gene->typSnpIdxGeneLD.clear(); // used to extract eqtl with beta idx in gene ld 
-                gene->impSnpIdxGeneLD.clear(); // used to extract eqtl idx need to impute
-                gene->cisSnpNameVec.clear();
-                gene->cisSnpID2IdxMapInGene.clear();
-            }
-            // Step 1.2 continue to add eQTLs into gene
-            if(snpCount < snpNum){
-                gene->cisSnpNameVec.push_back(snp);
-                gene->cisSnpID2IdxMapInGene.insert(pair<string,int>(snp,snpCount -1));
-            }
-            // Step 1.3 add the last eQTL into gene 
-            if(snpCount == snpNum){
-                gene->cisSnpNameVec.push_back(snp);
-                gene->cisSnpID2IdxMapInGene.insert(pair<string,int>(snp,snpCount -1));
-                gene->numSnpInGene = snpNum;
-                geneInfoVecLD.push_back(gene);
-                if (geneInfoMapLD.insert(pair<string, GeneInfo*>(id, gene)).second == false) {
-                    LOGGER.w(0, " Duplicate LD block ID found: \"" + id + "\".");
-                    return false;
-                }
-                snpCount = 1;
-                continue;  // snpCount ++ not works
-            }
-            snpCount++;
-        } // end of non-dup
-    } //  end of while loop
-    in.close();
-    LOGGER << geneInfoVecLD.size() << " genes to be included from [" + title + "]." << endl;
-    return true;
+    out.close(); if(!out) throw std::runtime_error("Failed writing gene-SNP map");
+}
 
+bool Data::readMultiEigenMatInfoFile(const string title, vector<GeneInfo*> &genes, map<string,GeneInfo*> &mapping) {
+    std::ifstream in(title); if(!in) return false;
+    string line,last; std::getline(in,line);
+    GeneInfo* gene=nullptr; int expected=0; int count=0;
+    double lastStart=0,lastEnd=0,lastWindow=0;
+    while(std::getline(in,line)) {
+        if(line.empty()) continue;
+        std::istringstream row(line); int chr,n; double start,end,window; string id,snp,extra;
+        if(!(row>>chr>>id>>start>>end>>window>>snp>>n) || (row>>extra) || n<1 ||
+           !std::isfinite(start) || !std::isfinite(end) || !std::isfinite(window) || start>end || window<0) return false;
+        if(count==0) {
+            if(mapping.count(id)) return false;
+            gene=new GeneInfo(genes.size(),id,chr); gene->start=std::ceil(start);gene->end=std::floor(end);gene->windows=std::llround(window);
+            gene->cisSnpNameVec.clear();gene->cisSnpID2IdxMapInGene.clear();
+            last=id;expected=n;lastStart=start;lastEnd=end;lastWindow=window;
+        }
+        if(id!=last || n!=expected || chr!=gene->chrom || start!=lastStart || end!=lastEnd || window!=lastWindow ||
+           !gene->cisSnpID2IdxMapInGene.emplace(snp,count).second) return false;
+        gene->cisSnpNameVec.push_back(snp);++count;
+        if(count==expected) {
+            gene->numSnpInGene=expected;genes.push_back(gene);mapping.emplace(id,gene);count=0;
+        }
+    }
+    if(count!=0 || genes.empty()) return false;
+    LOGGER << genes.size() << " genes read from [" << title << "]." << endl;
+    return true;
 }
 bool Data::readMultiEigenMatSnpInfoFile(const string title,vector<EqtlInfo *> &eqtlInfoVecLD, map<string, EqtlInfo *> &eqtlInfoMapLD){
     ifstream in(title.c_str());
@@ -3266,6 +3264,7 @@ bool Data::readMultiEigenMatBinFile(const string title, vector<GeneInfo*> &geneI
         geneEigenCutoffMap.insert(pair<string,float>(geneLD->ensemblID,oldEigenCutoff));
     }
     LOGGER << geneInfoVecLD.size()  << " genes are matched between gene eigen  LD reference and eQTL summary data." << endl;
+    fclose(fp);
     return true;
 
 }
@@ -3406,7 +3405,7 @@ void Data::readEigenMatLDBlockSnpInfoFile(const string &snpInfoFile,const string
     double genPos;
     double allele1Freq;
     int idx = 0;
-    SnpInfo *snp;
+    SnpInfo *snp = NULL;
     snpInfoMap.clear();
     snpInfoVec.clear();
     chromosomes.clear();
@@ -3740,3 +3739,5 @@ void Data::readSBayesRCBlockLdmSnpInfoFile(const string &snpInfoFile){
     numSnps = (unsigned) snpInfoVec.size();
     LOGGER << numSnps << " SNPs to be included from [" + snpInfoFile + "]." << endl;
 }
+
+/////////////// PRS-CS hdf format. ///////////////////////////

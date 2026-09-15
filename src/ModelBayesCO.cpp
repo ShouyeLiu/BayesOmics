@@ -1,3 +1,5 @@
+#include "MemoryBudget.hpp"
+#include <exception>
 
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
@@ -20,7 +22,9 @@
 // along with BayesOmics. If not, see <https://www.gnu.org/licenses/>.
 
 
+#include "ParallelGibbs.hpp"
 #include "ModelBayesCO.hpp"
+#include "OmicsMixture.hpp"
 
 void BayesCO::Intercept::sampleFromFC(VectorXd &wbcorr, const double &vare,const VectorXd &nGWAS){
     wbcorr = wbcorr.array() + value;
@@ -42,403 +46,105 @@ void BayesCO::InterceptEQTL::sampleFromFC(vector<VectorXd> &wAcorr, const map<st
     }
 }
 
-// AIAO model
-void BayesCO::SnpEffects::sampleFromFCAIAO(VectorXd &wbcorr, vector<VectorXd> &wAcorr,const vector<MatrixDat> &Z,const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
-    SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
-    const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap, const double sigmaSqBetaNonEqtl,
-    SigmaSqMat &sigmaSqMats, const double &piEffEqtl, const double &piEffNonEqtl,const VectorXd varEps, const double &vare) {
-    numNonZeros = 0;
-    numNonZerosNonEqtl = 0;
-    numNonNullEqtl = 0;
-    numNonNullSnpTot = 0;
-    numNonNullSnpPerGene = 0;
-    nnG = 0;
-    // sum of square
-    ssqNonEqtl = 0;
-    ssqBetaEqtl = 0;
-    ssqAlphaEqtl = 0;
-    
-    ghat.setZero(wbcorr.size());
-    gwhatMap.clear();
-    gwhatGwasMap.clear();
-    double numNonZerosEqtl = 0;
-    double sample = 0.0, oldSample = 0.0,varRes = 0.0,rhs = 0.0,uhat = 0.0,invLhs = 0.0;
-    double logDelta0 = 0.0 , logDelta1 = 0.0, probDelta1 = 0.0;
-    Vector2d sampleVec, oldSampleVec,  varResVec,diagVec, rhsVec, uhatVec;
-    Matrix2d invLhsMat;
-    arma::dvec uhatVecArma, sampleVecArma;
-    arma::dmat invLhsMatArma;
-    vector<int> snpIdxInLD;
-    vector<string> geneIDSet;
-    int snpIdx,geneIdx,cisSnpIdx;
-    string snpID,geneID;
-    set<string> nnGeneNameSet;
-    nnGeneNameSet.clear();
-    std::map<int, std::vector<int>>::iterator ldIter;
-    int numTotalSnps = gwasSnpIdx2snpIDMap.size();
-    int nGWAS =  Z[0].values.rows();
-
-    int nGenes = geneID2IdxMap.size();
-    ssqEqtlMat.resize(nGenes);
-    // #pragma omp parallel for schedule(dynamic)
-    numNonZerosEqtlVecAcrossGenesPostIW.resize(nGenes);
-    for(unsigned j = 0; j < nGenes; ++j){
-        ssqEqtlMat[j] = Matrix2d::Zero();
-        numNonZerosEqtlVecAcrossGenesPostIW[j] = 0;
-    }
-    for(unsigned snpIdx = 0; snpIdx < numTotalSnps; snpIdx ++ ){
-        snpID  = gwasSnpIdx2snpIDMap.at(snpIdx);
-        double sZPZ = Z[0].col(snpID).dot(Z[0].col(snpID)); // single value of ZPZ from a snp
-        if(gwasSnpID2geneIDMap.find(snpID) == gwasSnpID2geneIDMap.end()){
-            if(true){
-            ////////////////////////////////////////////////////////////////////
-            //////////////////// run BayesC module ///////////////////////
-            ////////////////////////////////////////////////////////////////////
-            double logPi = logf(piEffNonEqtl);
-            double logPiComp = logf(1.0 - piEffNonEqtl);
-            geneIdx = 0;
-            oldSample  = snpEffectVec[geneIdx]->getValue(snpID);
-            varRes     = vare ;
-            rhs        = Z[0].col(snpID).dot(wbcorr);
-            rhs        = rhs + sZPZ * oldSample;
-            rhs        = rhs/varRes;
-            invLhs     = 1.0/(sZPZ/vare + 1.0/sigmaSqBetaNonEqtl);
-            uhat       = invLhs * rhs;
-            logDelta0  = logPiComp;
-            logDelta1  = 0.5*(logf(invLhs) - logf(sigmaSqBetaNonEqtl) + uhat*rhs) + logPi;
-            probDelta1 = 1.0/(1.0 + expf(logDelta0-logDelta1));
-                if (Stat::ranf() < probDelta1){
-                    sample = uhat + Stat::snorm()*sqrt(invLhs);
-                    snpEffectVec[geneIdx]->setValue(snpID,sample);
-                    wbcorr = wbcorr + Z[0].col(snpID) * (oldSample - sample);
-                    ssqNonEqtl += sample*sample;
-                    numNonZerosNonEqtl ++;
-                    numNonZeros++;
-                    numNonNullSnpTot++;
-                } else {
-                    if (oldSample) { 
-                        wbcorr = wbcorr + Z[0].col(snpID) * oldSample;
-                    }
-                    snpEffectVec[geneIdx]->setValue(snpID,0);
-                } // end of probDelta1
-                betaTotal[snpIdx] = snpEffectVec[geneIdx]->getValue(snpID);
-                ghat = ghat + Z[0].col(snpID) * betaTotal[snpIdx]; 
-            }
-        } else{
-            if(true){
-            ///////////////////////////////////////////////////////////////////
-            //////////////////// run BayesCO gene module ////////////////////
-            ////////////////////////////////////////////////////////////////////
-            double logPiGene = logf(piEffEqtl);
-            double logPiGeneComp = logf(1.0 - piEffEqtl);
-            geneIDSet = gwasSnpID2geneIDMap.at(snpID);
-            bool isNonNullSnp = false;
-            vector<int> genePheIdxPerGene;
-            // cout << "nGWAS: " << nGWAS << endl;
-            for(unsigned j = 0; j < geneIDSet.size(); j++) {
-                geneID = geneIDSet[j];
-                geneIdx  = geneID2IdxMap.at(geneID);
-                cisSnpIdx = cisSnpID2IdxMap.at(snpID);
-                // cout << "geneID :" << geneID << " snpID: " << snpID << endl;
-                genePheIdxPerGene = genePheIdxMap.at(geneID);  // individuals with gene info
-                if(gwhatMap.find(geneIdx) == gwhatMap.end()) gwhatMap.insert(pair<int,VectorXd>(geneIdx,VectorXd::Zero(genePheIdxPerGene.size())));  // cis-heritability
-                // cout << "size: " << genePheIdxPerGene.size() << endl;
-                if(gwhatGwasMap.find(geneIdx) == gwhatGwasMap.end()) gwhatGwasMap.insert(pair<int,VectorXd>(geneIdx,VectorXd::Zero(nGWAS)));  //med heritabiltiy
-                double sZPZGene = (ZGene[0].col(snpID)(genePheIdxPerGene)).dot(ZGene[0].col(snpID)(genePheIdxPerGene));
-                // cout << " snpID: " << snpID << std::setprecision (15) <<  ZGene[0].col(snpID)(genePheIdxPerGene) << endl;
-                Vector2d oldSampleVec = Vector2d( snpEffectVec[geneIdx + 1]->getValue(snpID), eQTLJointVec[geneIdx]->getValue(snpID) );
-                varResVec    = Vector2d( vare, varEps[geneIdx] );
-                rhsVec       = Vector2d(Z[0].col(snpID).dot(wbcorr), ZGene[0].col(snpID)(genePheIdxPerGene).dot(wAcorr[geneIdx]) );
-                rhsVec       = rhsVec + Vector2d(sZPZ * oldSampleVec(0), sZPZGene * oldSampleVec(1)  );
-                rhsVec       = rhsVec.array() / varResVec.array();
-                diagVec      = Vector2d(sZPZ/vare, sZPZGene/varEps[geneIdx]);
-                invLhsMat    =  (diagVec.array()).matrix().asDiagonal();
-                invLhsMat    = (invLhsMat + sigmaSqMats.sigmaSqInvMats[geneIdx] ).inverse();
-                uhatVec      = invLhsMat.transpose() * rhsVec;
-                logDelta0    = logPiGeneComp;
-                logDelta1    = 0.5 * (logf(invLhsMat.determinant()) - sigmaSqMats.sigmaSqDetLogVec[geneIdx] + uhatVec.dot(rhsVec) ) + logPiGene;
-                probDelta1   = 1.0/(1.0 + expf(logDelta0-logDelta1));
-                if (Stat::ranf() < probDelta1) {
-                    Vector2d sampleVec;
-                    uhatVecArma = arma::dmat(uhatVec.data(),uhatVec.rows(),uhatVec.cols(),false,false);
-                    arma::dmat invLhsMatArma = arma::dmat(invLhsMat.data(),invLhsMat.rows(),invLhsMat.cols(),false,false);
-                    arma::dvec sampleVecArma = arma::mvnrnd(uhatVecArma, invLhsMatArma, 1); 
-                    sampleVec = Eigen::Map<Eigen::VectorXd>(sampleVecArma.memptr(),sampleVecArma.n_rows,sampleVecArma.n_cols); 
-                    snpEffectVec[geneIdx +1]->setValue(snpID,sampleVec(0) );
-                    eQTLJointVec[geneIdx]->setValue(snpID,sampleVec(1));
-                    wbcorr = wbcorr + Z[0].col(snpID) * (oldSampleVec(0) - sampleVec(0) );
-                    wAcorr[geneIdx] = wAcorr[geneIdx] + ZGene[0].col(snpID)(genePheIdxPerGene) *(oldSampleVec(1) - sampleVec(1) );
-
-                    gwhatMap.at(geneIdx) += ZGene[0].col(snpID)(genePheIdxPerGene) * eQTLJointVec[geneIdx]->getValue(snpID); // cis-heritability
-                    gwhatGwasMap.at(geneIdx) += Z[0].col(snpID) * eQTLJointVec[geneIdx]->getValue(snpID); //med-heri
-                    ssqEqtlMat[geneIdx] += ( sampleVec * sampleVec.transpose());
-                    ssqBetaEqtl = ssqBetaEqtl + sampleVec(0) * sampleVec(0) ;
-                    ssqAlphaEqtl = ssqAlphaEqtl + sampleVec(1) * sampleVec(1);
-                    numNonZerosEqtl ++;
-                    numNonZeros++;
-                    numNonZerosEqtlVecAcrossGenesPostIW[geneIdx] ++;
-                    isNonNullSnp = true;
-                    nnGeneNameSet.insert(geneID);
-                } else {
-                    if (oldSampleVec[0]){
-                            wbcorr = wbcorr + Z[0].col(snpID) * oldSampleVec(0);
-                        }
-                    if(oldSampleVec[1]){
-                            wAcorr[geneIdx] = wAcorr[geneIdx] + ZGene[0].col(snpID)(genePheIdxPerGene) * oldSampleVec(1);
-                        }
-                    snpEffectVec[geneIdx +1]->setValue(snpID,0 );
-                    eQTLJointVec[geneIdx]->setValue(snpID, 0 );
-                }
-            }
-            betaTotal[snpIdx] += snpEffectVec[geneIdx +1]->getValue(snpID);
-            ghat = ghat + Z[0].col(snpID) * betaTotal[snpIdx]; 
-            if(isNonNullSnp) {
-                ++numNonNullEqtl;
-                ++numNonNullSnpTot;    
-            }
-            } // end of SBayesCO module
-
-        } // end of if statement
-    } // end of snp loop
-
-    nnG = nnGeneNameSet.size();
-    if(nnG != 0){
-        numNonNullSnpPerGene = numNonZerosEqtl / nnG; // the 
-    }
-
-    numNonZerosEqtlVec = Vector2d(numNonZerosEqtl,numNonZerosEqtl);
-    values = betaTotal;
-} // end of sampleFromFCAIAO
 
 
 // EIEO model
-void BayesCO::SnpEffects::sampleFromFCEIEO(VectorXd &wbcorr, vector<VectorXd> &wAcorr,const vector<MatrixDat> &Z,const vector<MatrixDat> ZGene, const map<string, vector<int> > &genePheIdxMap, 
-    SnpEffectVec &snpEffectVec, EQTLJointVec &eQTLJointVec, SnpEffectVec &snpEffectVecLatent, EQTLJointVec &eQTLJointVecLatent,
-    const map<int,string> &gwasSnpIdx2snpIDMap, map<string, int> geneID2IdxMap,
-    const map<string,vector<string> > &gwasSnpID2geneIDMap, const map<string, int> cisSnpID2IdxMap, const double sigmaSqBetaNonEqtl,
-    SigmaSqMat &sigmaSqMats, const double &piEffEieo1, const double &piEffEieo2, const double &piEffNonEqtl,const VectorXd varEps, const double &vare) {
 
-    numNonZeros = 0;
-    numNonZerosEqtlVec = Vector2d::Zero();
-    numSnpCompVec = Vector4d::Zero();
-    numNonZerosNonEqtl = 0;
-    numNonNullEqtl = 0;
-    numNonNullSnpTot = 0;
-    numNonNullSnpPerGene = 0;
-    ssqBetaTotalGenic = 0;
-    numNonNullBetaTotGenic = 0;
-    nnG = 0;
-    // sum of square
-    ssqNonEqtl = 0;
-    ssqBetaEqtl = 0;
-    ssqAlphaEqtl = 0;
-    betaTotal.setZero(gwasSnpIdx2snpIDMap.size());
-    betaTotalLatent.setZero(gwasSnpIdx2snpIDMap.size());
+void BayesCO::SnpEffects::sampleFromFCEIEO(const Data &data, VectorXd &ycorr,
+    vector<VectorXd> &wcorr, SnpEffectVec &beta, EQTLJointVec &alpha,
+    SnpEffectVec &betaLatent, EQTLJointVec &alphaLatent, DeltaMat &components,
+    const VectorXd &gamma, const VectorXd &piNonEqtl, const MatrixXd &piEqtl,
+    double sigmaNonEqtl, const vector<MatrixXd> &covarianceInverse,
+    const VectorXd &varEps, double vare) {
 
-    ghat.setZero(wbcorr.size());
-    gwhatMap.clear();
-    gwhatGwasMap.clear();
-    double numNonZerosEqtl = 0;
-    double sample = 0.0, oldSample = 0.0,varRes = 0.0,rhs = 0.0,uhat = 0.0,invLhs = 0.0;
-    double logDelta0 = 0.0 , logDelta1 = 0.0, probDelta1 = 0.0;
-    Vector2d sampleVec, oldSampleVec,  varResVec,diagVec, rhsVec, uhatVec;
-    Matrix2d invLhsMat;
-    arma::dvec uhatVecArma, sampleVecArma;
-    arma::dmat invLhsMatArma;
-    vector<int> snpIdxInLD;
-    vector<string> geneIDSet;
-    int snpIdx,geneIdx,cisSnpIdx;
-    string snpID,geneID;
-    set<string> nnGeneNameSet;
-    nnGeneNameSet.clear();
-    std::map<int, std::vector<int>>::iterator ldIter;
-    int numTotalSnps = gwasSnpIdx2snpIDMap.size();
-    int nGWAS =  Z[0].values.rows();
-
-    int nGenes = geneID2IdxMap.size();
-    ssqEqtlMat.resize(nGenes);
-    // #pragma omp parallel for schedule(dynamic)
-    numNonZerosEqtlVecAcrossGenesPostIW.resize(nGenes);
-    for(unsigned j = 0; j < nGenes; ++j){
-    ssqEqtlMat[j] = Matrix2d::Zero();
-    numNonZerosEqtlVecAcrossGenesPostIW[j] = 0;
-    }
-    // numNonZerosEqtlVecAcrossGenesPostIW.assign(nGenes,0);
-
-    for(unsigned snpIdx = 0; snpIdx < numTotalSnps; snpIdx ++ ){
-        snpID  = gwasSnpIdx2snpIDMap.at(snpIdx);
-        double sZPZ = Z[0].col(snpID).dot(Z[0].col(snpID)); // single value of ZPZ from a snp
-        if(gwasSnpID2geneIDMap.find(snpID) == gwasSnpID2geneIDMap.end()){
-            if(true){
-                ////////////////////////////////////////////////////////////////////
-                //////////////////// run BayesC module ///////////////////////
-                ////////////////////////////////////////////////////////////////////
-                double logPi = logf(piEffNonEqtl);
-                double logPiComp = logf(1.0 - piEffNonEqtl);
-                geneIdx = 0;
-                oldSample  = snpEffectVec[geneIdx]->getValue(snpID); 
-                varRes     = vare ;
-                rhs        = Z[0].col(snpID).dot(wbcorr);
-                rhs        = rhs + sZPZ * oldSample;
-                rhs        = rhs/varRes;
-                invLhs     = 1.0/(sZPZ/vare + 1.0/sigmaSqBetaNonEqtl);
-                uhat       = invLhs * rhs;
-                logDelta0  = logPiComp;
-                logDelta1  = 0.5*(logf(invLhs) - logf(sigmaSqBetaNonEqtl) + uhat*rhs) + logPi;
-                probDelta1 = 1.0/(1.0 + expf(logDelta0-logDelta1));
-                if (Stat::ranf() < probDelta1){
-                sample = uhat + Stat::snorm()*sqrt(invLhs);
-                snpEffectVec[geneIdx]->setValue(snpID,sample);
-                wbcorr = wbcorr + Z[0].col(snpID) * (oldSample - sample);
-                ssqNonEqtl += sample*sample;
-                numNonZerosNonEqtl ++;
-                numNonZeros++;
-                numNonNullSnpTot++;
-                } else {
-                    if (oldSample) { 
-                        wbcorr = wbcorr + Z[0].col(snpID) * oldSample;
-                    }
-                    snpEffectVec[geneIdx]->setValue(snpID,0);
-                } // end of probDelta1
-                betaTotal[snpIdx] = snpEffectVec[geneIdx]->getValue(snpID);
+    // CO-EIEO retains sequential SNP Gibbs updates. Cache only immutable
+    // molecular column norms; parallel preparation never draws random numbers.
+    if(geneGenotypeNorms.size()!=alpha.size()) {
+        geneGenotypeNorms.resize(alpha.size());
+        vector<string> orderedGenes(alpha.size());
+        for(const auto &item:data.geneID2IdxMap)orderedGenes.at(item.second)=item.first;
+        for(unsigned g=0;g<alpha.size();++g)geneGenotypeNorms[g].resize(alpha[g]->values.size());
+        int normWorkers=ParallelGibbs::workers(alpha.size());
+        if(MemoryBudget::enabled()) {
+            const auto perWorker=MemoryBudget::bytes(data.geneGenotype().rows(),1);
+            normWorkers=std::min<int>(normWorkers,std::max<uint64_t>(1,MemoryBudget::status().available/4/std::max<uint64_t>(1,perWorker)));
+        }
+        vector<std::exception_ptr> normErrors(alpha.size());
+        #pragma omp parallel for schedule(dynamic) num_threads(normWorkers) if(!data.geneGenotype().streamed() && normWorkers>1)
+        for(unsigned g=0;g<alpha.size();++g) {
+          try {
+            const auto &individuals=data.genePheIdxMap.at(orderedGenes[g]);
+            for(const auto &item:alpha[g]->name2index) {
+                const VectorXd column=data.geneGenotype().col(data.cisSnpID2IdxMap.at(item.first))(individuals);
+                geneGenotypeNorms[g][item.second]=ParallelGibbs::dot(column,column);
             }
-        } else{
-            if(true){
-                ///////////////////////////////////////////////////////////////////
-                //////////////////// run BayesCO gene module ////////////////////
-                ////////////////////////////////////////////////////////////////////
-                Vector2d logPiGeneVec = Vector2d( log(piEffEieo1), log(piEffEieo2));
-                Vector2d logPiGeneCompVec = Vector2d(log(1- piEffEieo1), log(1-piEffEieo2));
-                bool isNonNullSnp = false;
-                bool isNonNullSnpTrait = false;
-                bool isNonNullSnpGene = false;
-                geneIDSet = gwasSnpID2geneIDMap.at(snpID);
-                vector<int> genePheIdxPerGene;
-                for(unsigned j = 0; j < geneIDSet.size(); j++) {
-                    string geneID = geneIDSet[j];
-                    int geneIdx  = geneID2IdxMap.at(geneID);
-                    int cisSnpIdx = cisSnpID2IdxMap.at(snpID);
-                    genePheIdxPerGene = genePheIdxMap.at(geneID);  // individuals with gene info
-                    if(gwhatMap.find(geneIdx) == gwhatMap.end()) gwhatMap.insert(pair<int,VectorXd>(geneIdx,VectorXd::Zero(genePheIdxPerGene.size())));  // cis-heritability
-                    if(gwhatGwasMap.find(geneIdx) == gwhatGwasMap.end()) gwhatGwasMap.insert(pair<int,VectorXd>(geneIdx,VectorXd::Zero(nGWAS)));  //med heritabiltiy
-                    double sZPZGene = (ZGene[0].col(snpID)(genePheIdxPerGene)).dot(ZGene[0].col(snpID)(genePheIdxPerGene));
-                    Vector2d sampleLatentVec = Vector2d(snpEffectVecLatent[geneIdx +1]->getValue(snpID), eQTLJointVecLatent[geneIdx]->getValue(snpID));
-                    Vector2d oldSampleVec = Vector2d( snpEffectVec[geneIdx + 1]->getValue(snpID), eQTLJointVec[geneIdx]->getValue(snpID));
-                    Vector2d newSampleVec = oldSampleVec;
-                    Vector2d varResVec    = Vector2d( vare, varEps[geneIdx]);
-                    Vector2d rhsVec       =  Vector2d(Z[0].col(snpID).dot(wbcorr), ZGene[0].col(snpID)(genePheIdxPerGene).dot(wAcorr[geneIdx]) );
-                    //////////////////////////////////////////////
-                    rhsVec       = rhsVec + Vector2d(sZPZ * oldSampleVec(0), sZPZGene * oldSampleVec(1)  );
-                    rhsVec       = rhsVec.array() / varResVec.array();
-                    diagVec      = Vector2d(sZPZ/vare, sZPZGene/varEps[geneIdx]);
-                    //// here use eieo sampler I
-                    for(int traitIdx = 0; traitIdx < 2; traitIdx ++){
-                        int altTraitIdx = 1- traitIdx;
-                        double Ginv11 = sigmaSqMats.sigmaSqInvMats[geneIdx](traitIdx,traitIdx);
-                        double Ginv12 = sigmaSqMats.sigmaSqInvMats[geneIdx](traitIdx,altTraitIdx);
-                        double C11 = 0;
-                        if(traitIdx ==0){
-                            C11 = Ginv11 + diagVec(0);
-                        } else {
-                            C11 = Ginv11 + diagVec(1);
-                        }
-                        double C12 = Ginv12; // assuming residual covariance = 0
-                        /// When delta_{jk} = 0
-                        double invLhs0 = 1/ Ginv11;
-                        double rhs0 = - Ginv12 * sampleLatentVec[altTraitIdx];
-                        double uhat0 = rhs0 * invLhs0;
-
-                        // when delta_{jk} = 1
-                        double invLhs1 = 1/C11;
-                        double rhs1 = rhsVec[traitIdx] - C12 * sampleLatentVec[altTraitIdx];
-                        double uhat1 = rhs1 * invLhs1;
-
-                        /// Sample delta_{jk}
-                        double logDelta0 = - 0.5 * (log(Ginv11) - uhat0 * uhat0 * Ginv11) + logPiGeneCompVec[traitIdx];
-                        double logDelta1 = - 0.5 * (log(C11) - uhat1 * uhat1 * C11) + logPiGeneVec[traitIdx];
-                        double probDelta1   = 1.0/(1.0 + exp(logDelta0-logDelta1));
-                        // Sample marker effects
-                        if (Stat::ranf() < probDelta1) {
-                        // if (Stat::ranf() < 1) {
-                            sampleLatentVec(traitIdx) = uhat1 + Stat::snorm()*sqrt(invLhs1);
-                            // sampleLatentVec(traitIdx) = uhat1 ;
-                            newSampleVec(traitIdx) = sampleLatentVec(traitIdx);
-                            if(traitIdx == 0) {
-                                isNonNullSnpTrait = true;
-                                wbcorr = wbcorr + Z[0].col(snpID) * (oldSampleVec(traitIdx) - newSampleVec(traitIdx));
-                                numNonZerosEqtlVec(0) = numNonZerosEqtlVec(0) + 1;
-                                numNonZerosGenicGwasVec[geneIdx]++;
-                                ssqBetaEqtlPG[geneIdx] += sampleLatentVec(traitIdx) * sampleLatentVec(traitIdx);
-                            } else {
-                                isNonNullSnpGene = true;
-                                wAcorr[geneIdx] = wAcorr[geneIdx] + ZGene[0].col(snpID)(genePheIdxPerGene) * (oldSampleVec(traitIdx) - newSampleVec(traitIdx));
-                                numNonZerosEqtlVec(1) = numNonZerosEqtlVec(1) + 1;
-                                numNonZerosGenicEqtlVec[geneIdx]++;
-                                // ssqAlphaEqtlPG[geneIdx] += sampleLatentVec(traitIdx) * sampleLatentVec(traitIdx);
-                            }   
-                        } else {
-                            sampleLatentVec(traitIdx) = uhat0 + Stat::snorm()*sqrt(invLhs0);
-                            newSampleVec(traitIdx)  = 0;
-                            if(oldSampleVec(traitIdx)){
-                                if(traitIdx == 0){
-                                    wbcorr = wbcorr + Z[0].col(snpID) * (oldSampleVec(traitIdx));
-                                } else {
-                                    wAcorr[geneIdx] = wAcorr[geneIdx] + ZGene[0].col(snpID)(genePheIdxPerGene) * (oldSampleVec(traitIdx));
-                                }
-                            } 
-                        } // end if statement when sampling marker effects
-                        // update marker effects
-                        if(traitIdx == 0){
-                            snpEffectVec[geneIdx +1]->setValue(snpID,newSampleVec(traitIdx));
-                            snpEffectVecLatent[geneIdx+1]->setValue(snpID,sampleLatentVec(traitIdx));
-                            // ssqBetaEqtl = ssqBetaEqtl + newSampleVec(traitIdx) * newSampleVec(traitIdx);
-                            ssqBetaEqtl += sampleLatentVec(traitIdx) * sampleLatentVec(traitIdx);
-                            betaTotal[snpIdx] += snpEffectVec[geneIdx +1]->getValue(snpID);
-                            betaTotalLatent[snpIdx] += snpEffectVecLatent[geneIdx +1]->getValue(snpID);
-                        } else {
-                            eQTLJointVec[geneIdx]->setValue(snpID,newSampleVec(traitIdx));
-                            eQTLJointVecLatent[geneIdx]->setValue(snpID, sampleLatentVec(traitIdx));
-                            ssqAlphaEqtl = ssqAlphaEqtl + newSampleVec(traitIdx) * newSampleVec(traitIdx);
-                            ssqAlphaEqtlPG[geneIdx] += sampleLatentVec(traitIdx) * sampleLatentVec(traitIdx);
-                        }
-                    } /// end of eieo sampler I
-                    Vector2d sampleLatentPairVec = Vector2d(snpEffectVecLatent[geneIdx + 1]->getValue(snpID),eQTLJointVecLatent[geneIdx]->getValue(snpID));
-                    ssqEqtlMat[geneIdx] += ( sampleLatentPairVec * sampleLatentPairVec.transpose());
-                    numNonZerosEqtlVecAcrossGenesPostIW[geneIdx] = numNonZerosEqtlVecAcrossGenesPostIW[geneIdx] + 1;
-                }  // end of overlapping genes
-                ////////////////////
-                if(isNonNullSnpTrait) {
-                    numNonNullSnpTot = numNonNullSnpTot + 1; 
-                    numNonZeros++;   
-                    ++numNonNullBetaTotGenic;  
-                    ssqBetaTotalGenic += betaTotal[snpIdx] * betaTotal[snpIdx];             
-                } 
-                if(isNonNullSnpGene){
-                    numNonNullEqtl = numNonNullEqtl + 1;
-                }
-                // snp role
-                if(!isNonNullSnpTrait && !isNonNullSnpGene){
-                    numSnpCompVec(0) = numSnpCompVec(0) + 1;  // snp00
-                } else if(isNonNullSnpTrait && !isNonNullSnpGene){
-                    numSnpCompVec(1) = numSnpCompVec(1) + 1;  // snp10
-                } else if(!isNonNullSnpTrait && isNonNullSnpGene){
-                    numSnpCompVec(2) = numSnpCompVec(2) + 1;  // snp01
-                } else {
-                    numSnpCompVec(3) = numSnpCompVec(3) + 1;  // snp11
-                }
-            } // end of SBayesCO module
-        } // end of if statement
-    } // end of snp loop
-
-    nnG = nnGeneNameSet.size();
-    if(nnG != 0){
-        numNonNullSnpPerGene = numNonZerosEqtl / nnG; // the 
+          } catch(...) {normErrors[g]=std::current_exception();}
+        }
+        for(const auto &error:normErrors)if(error){geneGenotypeNorms.clear();std::rethrow_exception(error);}
     }
-    numNonZerosEqtlVec = Vector2d(numNonZerosEqtl,numNonZerosEqtl);
-    values = betaTotal;
-} // end of sampleFromFCAIAO
-
-
+    if(genotypeNorms.size()!=data.genotype().cols())ParallelGibbs::columnNorms(data.genotype(),genotypeNorms);
+    const unsigned K=gamma.size(), G=data.numKeptGenes;
+    const OmicsMixture::Draws draws(data);
+    numNonZeros=numNonZerosNonEqtl=numNonNullEqtl=numNonNullSnpTot=0;
+    numNonZerosEqtlVec.setZero(); ssqNonEqtl=ssqBetaEqtl=ssqAlphaEqtl=0;
+    ssqEqtlMat.assign(G,Matrix2d::Zero());
+    numNonZerosEqtlVecAcrossGenesPostIW.assign(G,0);
+    componentCountsNonEqtl.setZero(K); componentCountsEqtl.setZero(2,K);
+    for (auto *p : components) p->values.setZero();
+    for (unsigned j=0;j<data.numIncdSnps;++j) {
+        panelScores.begin(j,data.genotype(),ycorr,genotypeNorms);
+        const string &id=data.snpEffectNames[j];
+        std::size_t draw=draws.offset[j];
+        const auto x=data.genotype().col(j);
+        const double xx=genotypeNorms[j];
+        auto genes=data.gwasSnpID2geneIDMap.find(id);
+        if (genes==data.gwasSnpID2geneIDMap.end()) {
+            const double old=beta[0]->getValue(id), score=((panelScores.enabled()?panelScores.score(j):ParallelGibbs::dot(x,ycorr))+xx*old)/vare;
+            auto conditional=OmicsMixture::eieo(xx/vare,score,1/sigmaNonEqtl,0,0,gamma,piNonEqtl);
+            const unsigned k=OmicsMixture::choose(conditional.probability,draws.uniform[draw]);
+            const double effect=k ? sqrt(gamma[k])*(conditional.mean[k]+sqrt(conditional.variance[k])*draws.normal[draw]) : 0;
+            beta[0]->setValue(id,effect); ParallelGibbs::axpy(x,old-effect,ycorr);panelScores.update(j,old-effect);
+            ++componentCountsNonEqtl[k]; components[0]->values(j,0)=k;
+            if (k) {ssqNonEqtl+=effect*effect/gamma[k]; ++numNonZerosNonEqtl; ++numNonZeros; ++numNonNullSnpTot;}
+            continue;
+        }
+        bool activeBeta=false, activeAlpha=false;
+        for (const string &gene : genes->second) {
+            const unsigned g=data.geneID2IdxMap.at(gene);
+            const int ci=data.cisSnpID2IdxMap.at(id);
+            const VectorXd z=data.geneGenotype().col(ci)(data.genePheIdxMap.at(gene));
+            const double zz=geneGenotypeNorms[g][alpha[g]->name2index.at(id)];
+            const Vector2d old(beta[g+1]->getValue(id),alpha[g]->getValue(id));
+            Vector2d latent(betaLatent[g+1]->getValue(id),alphaLatent[g]->getValue(id));
+            const Vector2d score((ParallelGibbs::dot(x,ycorr)+xx*old[0])/vare,(ParallelGibbs::dot(z,wcorr[g])+zz*old[1])/varEps[g]);
+            const Vector2d precision(xx/vare,zz/varEps[g]);
+            for (unsigned t=0;t<2;++t) {
+                const auto &inv=covarianceInverse[g];
+                auto conditional=OmicsMixture::eieo(precision[t],score[t],inv(t,t),inv(t,1-t),latent[1-t],gamma,piEqtl.row(t));
+                const unsigned k=OmicsMixture::choose(conditional.probability,draws.uniform[draw+t]);
+                latent[t]=(conditional.mean[k]+sqrt(conditional.variance[k])*draws.normal[draw+t]);
+                const double effect=sqrt(gamma[k])*latent[t];
+                ++componentCountsEqtl(t,k); components[t]->values(j,g+1)=k;
+                if (t==0) {
+                    beta[g+1]->setValue(id,effect); betaLatent[g+1]->setValue(id,latent[t]);
+                    ParallelGibbs::axpy(x,old[t]-effect,ycorr);panelScores.update(j,old[t]-effect);
+                    if(k) {activeBeta=true; ++numNonZerosEqtlVec[t]; ssqBetaEqtl+=latent[t]*latent[t];}
+                } else {
+                    alpha[g]->setValue(id,effect); alphaLatent[g]->setValue(id,latent[t]);
+                    ParallelGibbs::axpy(z,old[t]-effect,wcorr[g]);
+                    if(k) {activeAlpha=true; ++numNonZerosEqtlVec[t]; ssqAlphaEqtl+=latent[t]*latent[t];}
+                }
+            }
+            draw+=2;
+            // All latent pairs inform the covariance, including zero components.
+            ssqEqtlMat[g].noalias()+=latent*latent.transpose();
+            ++numNonZerosEqtlVecAcrossGenesPostIW[g];
+        }
+        if(activeBeta) {++numNonZeros; ++numNonNullSnpTot;}
+        if(activeAlpha) ++numNonNullEqtl;
+    }
+    rebuildPredictions(data,beta,alpha);
+}
 
 
 void BayesCO::GenotypicVar::compute(VectorXd &betaTotal,const MatrixXd &Z){
@@ -525,7 +231,7 @@ void BayesCO::SigmaSqBetaNonEqtl::sampleFromFC(const double snpEffSumSq, const u
     value = InvChiSq::sample(dfTilde, scaleTilde);
 }
 
-void BayesCO::SigmaSqAlphaVec::sampleFromFC(const MatrixXd &eQTLJointMat, const map<int,vector<int>> &gene2cisSnpMap){
+void BayesCO::SigmaSqAlphaVec::sampleFromFC(const MatrixXd &deltaMat, const MatrixXd &eQTLJointMat, const map<int,vector<int>> &gene2cisSnpMap){
     VectorXd snpEffSumSq(geneNames.size());
     VectorXd numSnpEff(geneNames.size());
     vector<int> eQTLCommonCis;
@@ -556,6 +262,7 @@ void BayesCO::SigmaSqMat::setPrior(const double &sigmaSqBetaEqtl, const VectorXd
         varcov << sigmaSqBetaEqtl, 0, 0, sigmaSqAlphaVec[i];
         varcovPriors[i] = varcov * 0.5;
         sigmaSqMats[i] = varcov;
+        (*this)[i]->values=varcov;
         sigmaSqInvMats[i] = sigmaSqMats[i].inverse();
         sigmaSqDetLogVec[i] = log( sigmaSqMats[i].determinant());
     }
@@ -577,7 +284,7 @@ void BayesCO::SigmaSqMat::sampleFromFCInvWishartGeneral(const double &ssqBetaEqt
     varcovPriorsChr << sigmaSqBetaEqtlPM * 0.5 , 0.0, 0.0, sigmaSqAlphaAll * 0.5 ;
     Matrix2d   sampleEigen;
     for(int i =0; i < numGenes; ++i){
-        if(numNonZerosEqtlVecAcrossGenesPostIW[i] == 0) {continue;}
+
         MatrixXd effArmEigen = ssqEqtlMat[i] + varcovPriorsChr;
         dfIW = 4.0 + numNonZerosEqtlVecAcrossGenesPostIW[i];
         arma::dmat effArma = arma::dmat(effArmEigen.data(),effArmEigen.rows(),effArmEigen.cols(),false,false);
@@ -592,6 +299,7 @@ void BayesCO::SigmaSqMat::sampleFromFCInvWishartGeneral(const double &ssqBetaEqt
         MatrixXd   sampleEigen = Eigen::Map<Eigen::MatrixXd>(sample.memptr(),sample.n_rows, sample.n_cols);
         /////////////////////////////////////////////////////////////////////
         sigmaSqMats[i] = sampleEigen;
+        (*this)[i]->values=sampleEigen;
         sigmaSqInvMats[i] = sigmaSqMats[i].inverse();
         sigmaSqDetLogVec[i] = logf( sigmaSqMats[i].determinant());
     }
@@ -637,7 +345,7 @@ void BayesCO::GeneEffects::sampleFromeFC(Data data, int iter , VectorXd &betaTot
 
     betaCorr = betaTotal(eQTLCommon);
     // cout << "betacorr: " << betaCorr.head(6) << betaCorr.tail(6) << endl;
-    H = eQTLJointMat(eQTLCommonCis,all);
+    H = eQTLJointMat(eQTLCommonCis,Eigen::indexing::all);
     // cout << "H: " << H << endl;
     HPH = (H.transpose() * H).diagonal();
     // cout << "HPH: " << HPH << endl;
@@ -694,7 +402,7 @@ void BayesCO::SigmaSqTheta::sampleFromFC(const double snpEffSumSq, const unsigne
     value = InvChiSq::sample(dfTilde, scaleTilde);
 }
 
-void BayesCO::setStartVal(Data data){
+void BayesCO::setStartVal(const Data &data){
     if(data.numKeptGenes)
         sigmaSqMats.setPrior(sigmaSqBetaEqtl.value, sigmaSqAlphaVec.values);
 }
@@ -709,45 +417,46 @@ void BayesCO::sampleUnknowns(){
     unsigned cnt=0;
     intercept.sampleFromFC(wbcorr,vare.value,data.n);
     interceptEqtl.sampleFromFC(wAcorr,data.genePheIdxMap,varEps.values,data.neQTLVec);
-    // aiao sampling
-    if(mcmcType == "AIAO"){
-        do {
-            snpEffects.sampleFromFCAIAO(wbcorr,wAcorr,data.ZDat,data.ZGeneDat, data.genePheIdxMap, snpEffectVec, eQTLJointVec,
-            data.gwasSnpIdx2snpIDMap,data.geneID2IdxMap,data.gwasSnpID2geneIDMap, data.cisSnpID2IdxMap, 
-            sigmaSqBetaNonEqtl.value, sigmaSqMats,piEffEqtl.value,piEffNonEqtl.value,varEps.values,vare.value);
-            if (++cnt == 100) LOGGER.e(0,"Error: Zero SNP effect in the model for 100 cycles of sampling");
-        }while (snpEffects.numNonZeros == 0);
+    // genic effects sampling
+    
+
+    if (mcmcType == "EIEO") {
+        Vector2d gamma(0,1), piNon(1-piEffNonEqtl.value,piEffNonEqtl.value);
+        MatrixXd piGene(2,2);
+        piGene << 1-piEffEieo1.value,piEffEieo1.value,1-piEffEieo2.value,piEffEieo2.value;
+        snpEffects.sampleFromFCEIEO(data,wbcorr,wAcorr,snpEffectVec,eQTLJointVec,
+            snpEffectVecLatent,eQTLJointVecLatent,deltaTrait,gamma,piNon,piGene,
+            sigmaSqBetaNonEqtl.value,sigmaSqMats.sigmaSqInvMats,varEps.values,vare.value);
         if (estimatePi) {
-        // if (true) {
-            if(data.numKeptGenes != 0){
-                piEffEqtl.sampleFromFC(data.numEqtlOverlap, snpEffects.numNonZerosEqtlVec(0));
-            }else{
-                piEffEqtl.value = 0;
-            }
-            // intergenic region
-            if(data.numNonEqtl != 0){
-                piEffNonEqtl.sampleFromFC(data.numNonEqtl, snpEffects.numNonZerosNonEqtl);
-            }else{
-                piEffNonEqtl.value = 0;
-            }
-        } // end of estimatePi
-        if(data.numKeptGenes != 0){  
-            // geneEffectVec.sampleFromeFC(data,iter,snpEffects.betaTotal,eQTLJointMat.values,data.gene2gwasSnpMap,data.gene2cisSnpMap,sigmaSqTheta.value,geneEffectVec.vareMed,piTheta.value, geneEffectVec.deltaGene);
-            sigmaSqTheta.sampleFromFC(geneEffectVec.values.dot(geneEffectVec.values),geneEffectVec.nnGene);
+            piEffEieo1.sampleFromFC(data.numEqtlOverlap,snpEffects.numNonZerosEqtlVec[0]);
+            piEffEieo2.sampleFromFC(data.numEqtlOverlap,snpEffects.numNonZerosEqtlVec[1]);
+            piEffNonEqtl.sampleFromFC(data.numNonEqtl,snpEffects.numNonZerosNonEqtl);
+        }
+        geneEffectVec.sampleSecondary(data,snpEffects.betaTotal,eQTLJointVec,sigmaSqTheta.value,piTheta.value);
+        if (geneEffectVec.secondaryAvailable) {
+            sigmaSqTheta.sampleFromFC(geneEffectVec.values.squaredNorm(),geneEffectVec.nnGene);
             piTheta.sampleFromFC(geneEffectVec.numGenes,geneEffectVec.nnGene);
-            sigmaSqMats.sampleFromFCInvWishartGeneral(snpEffects.ssqBetaEqtl, snpEffects.ssqAlphaEqtl, snpEffects.ssqEqtlMat,snpEffects.numNonZerosEqtlVec,snpEffects.numNonZerosEqtlVecAcrossGenesPostIW,false);
-        } // end of gene effect estimation
+        }
+        sigmaSqMats.sampleFromFCInvWishartGeneral(snpEffects.ssqBetaEqtl,snpEffects.ssqAlphaEqtl,
+            snpEffects.ssqEqtlMat,snpEffects.numNonZerosEqtlVec,snpEffects.numNonZerosEqtlVecAcrossGenesPostIW,false);
     }
 
     // vare.sampleFromFC(data.y,data.Z,snpEffects.betaTotal, data.n);
-    vare.sampleFromFC(wbcorr,data.n);
+
+    vareMedParameter.value=geneEffectVec.vareMed;
+    thetaInterceptParameter.value=geneEffectVec.muRegression;
+    if (!data.fixedResidual) vare.sampleFromFC(wbcorr,data.n);
     vareMean.value = vare.value;
     if(data.numKeptGenes != 0) {
         varEpsMean.value = varEps.values.mean();
         // varEps.sampleFromFC(data.genePheVec,data.ZGene,eQTLJointVec,data.neQTLVec, data.genePheIdxMap, data.geneEffectNames,data.gene2cisSnpMap);
-        varEps.sampleFromFC(wAcorr,data.neQTLVec);
+        if (!data.fixedResidual) varEps.sampleFromFC(wAcorr,data.neQTLVec);
     }
-    // summary 
+    for (unsigned g=0;g<data.numKeptGenes;++g) {
+        residualMats[g]->values=Vector2d(vare.value,varEps.values[g]).asDiagonal();
+    }
+    nnzBtw.value=snpEffects.numNonZerosNonEqtl;
+    // summary
     nnsTot.getValue(snpEffects.numNonNullSnpTot);  // nnSnp
     if(data.numKeptGenes != 0){
         nnzGen.getValue(snpEffects.numNonZerosEqtlVec(0));
@@ -772,8 +481,9 @@ void BayesCO::sampleUnknowns(){
     vargGeneCis.compute(snpEffects.gwhatMap);
     vargGene.compute(data.numKeptInds,snpEffects.gwhatGwasMap,geneEffectVec.values);
     hsq.compute(varg.value, vare.value);
+
     if(data.numKeptGenes != 0){
-        medHsq.compute(vargGene.value, varg.value,vare.value);
+        medHsq.value=vargGene.value/data.varPhenotypic;
         cisHsq.compute(vargGeneCis.values, data.varPhenotypiceQTL);
 
         sigmaSqAlpha.value = sigmaSqMats.sigmaSqAlphaAll;
@@ -786,4 +496,85 @@ void BayesCO::sampleUnknowns(){
         cisHsqMean.value = 0; 
     }
     ++iter;
+}
+
+// Derived predictions are rebuilt from the current coefficients, never accumulated across sweeps.
+void BayesCO::SnpEffects::rebuildPredictions(const Data &data, const SnpEffectVec &beta, const EQTLJointVec &alpha) {
+    betaTotal.setZero(data.numIncdSnps);
+    ghat.setZero(data.numKeptInds);
+    for (unsigned j=0;j<data.numIncdSnps;++j) {
+        const string &id=data.snpEffectNames[j];
+        auto linked=data.gwasSnpID2geneIDMap.find(id);
+        if (linked==data.gwasSnpID2geneIDMap.end()) betaTotal[j]=beta[0]->getValue(id);
+        else for (const auto &g : linked->second) betaTotal[j]+=beta[data.geneID2IdxMap.at(g)+1]->getValue(id);
+
+    }
+    ParallelGibbs::sparseProduct(data.genotype(),betaTotal,ghat);
+    values=betaTotal;
+    gwhatMap.clear(); gwhatGwasMap.clear();
+    vector<VectorXd> localPredictions(data.numKeptGenes),globalPredictions(data.numKeptGenes);
+    vector<std::exception_ptr> errors(data.numKeptGenes);
+    #pragma omp parallel num_threads(ParallelGibbs::workers(data.numKeptGenes)) if(data.numKeptGenes>1 && !data.genotype().streamed() && !data.geneGenotype().streamed())
+    {
+    #pragma omp single
+    predictionWorkerCount=omp_get_num_threads();
+    #pragma omp for schedule(dynamic)
+    for (unsigned g=0;g<data.numKeptGenes;++g) {
+      try {
+        const auto &ids=data.genePheIdxMap.at(data.geneEffectNames[g]);
+        VectorXd local=VectorXd::Zero(ids.size()), global=VectorXd::Zero(data.numKeptInds);
+        for (const auto &snp : data.gene2cisSnpIDMap.at(g)) {
+            const double effect=alpha[g]->getValue(snp);
+            if (effect==0.0) continue;
+            const int ci=data.cisSnpID2IdxMap.at(snp), gi=data.snpInfoMap.at(snp)->index;
+            const auto localColumn=data.geneGenotype().col(ci);
+            for (unsigned i=0;i<ids.size();++i) local[i]+=localColumn[ids[i]]*effect;
+            ParallelGibbs::axpy(data.genotype().col(gi),effect,global);
+        }
+        localPredictions[g]=std::move(local);globalPredictions[g]=std::move(global);
+      } catch(...) {errors[g]=std::current_exception();}
+    }
+    }
+    for(const auto &error:errors)if(error)std::rethrow_exception(error);
+    for(unsigned g=0;g<data.numKeptGenes;++g) {
+        gwhatMap.emplace(g,std::move(localPredictions[g]));
+        gwhatGwasMap.emplace(g,std::move(globalPredictions[g]));
+    }
+
+}
+
+// Independent secondary mixture regression of total cis beta on current alpha.
+void BayesCO::GeneEffects::sampleSecondary(const Data &data, const VectorXd &betaTotal,
+                                         const vector<ParamSet*> &alpha, double sigmaTheta, double piTheta) {
+    std::set<int> activeSet;
+    for(unsigned g=0;g<numGenes;++g)
+        for(const auto &snp:data.gene2cisSnpIDMap.at(g))
+            if(alpha[g]->getValue(snp)!=0)activeSet.insert(data.snpInfoMap.at(snp)->index);
+    vector<int> active(activeSet.begin(),activeSet.end());
+    deltaGene.setZero(); nnGene=0; ssqGene=0; secondaryAvailable=active.size()>=2;
+    if (!secondaryAvailable) { values.setZero(); muRegression=0.0; return; }
+    MemoryBudget::require(MemoryBudget::bytes(active.size(),numGenes+6),"secondary theta active-cis workspace");
+    MatrixXd H=MatrixXd::Zero(active.size(),numGenes);VectorXd target(active.size());
+    std::map<int,unsigned> row;for(unsigned j=0;j<active.size();++j){row.emplace(active[j],j);target[j]=betaTotal[active[j]];}
+    for(unsigned g=0;g<numGenes;++g)for(const auto &snp:data.gene2cisSnpIDMap.at(g)){
+        const double effect=alpha[g]->getValue(snp);if(effect!=0)H(row.at(data.snpInfoMap.at(snp)->index),g)=effect;
+    }
+    VectorXd residual=target-H*values;
+    muRegression=Normal::sample(residual.mean(),vareMed/active.size());
+    residual.array()-=muRegression;
+    for (unsigned g=0;g<numGenes;++g) {
+        const double old=values[g], xx=H.col(g).squaredNorm();
+        const double rhs=(H.col(g).dot(residual)+xx*old)/vareMed;
+        const double v=1.0/(xx/vareMed+1.0/sigmaTheta), mean=v*rhs;
+        const double odds=0.5*(log(v/sigmaTheta)+mean*rhs)+log(piTheta)-log1p(-piTheta);
+        const double prob=odds>=0 ? 1.0/(1.0+exp(-odds)) : exp(odds)/(1.0+exp(odds));
+        values[g]=Stat::ranf()<prob ? Normal::sample(mean,v) : 0.0;
+        residual.noalias()+=H.col(g)*(old-values[g]);
+        if (values[g]!=0.0) {deltaGene[g]=1; ++nnGene;}
+    }
+    const double residualVariance=(residual.array()-residual.mean()).square().sum()/(active.size()-1.0);
+    if (residualVariance>0 && std::isfinite(residualVariance)) vareMed=residualVariance;
+    VectorXd prediction=H*values;
+    const double genetic=(prediction.array()-prediction.mean()).square().sum()/(active.size()-1.0);
+    propMed=genetic/(genetic+vareMed); ssqGene=values.squaredNorm();
 }

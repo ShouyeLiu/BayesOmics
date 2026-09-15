@@ -1,0 +1,20 @@
+{
+  "cisWindow": 50000,
+  "blocks": [
+    582,
+    583,
+    584,
+    585
+  ],
+  "snps": 5092,
+  "genes": 133,
+  "geneSnpPairs": 6539,
+  "configSources": [
+    "pseudo-1kg-chr22-cau-lbs582-585-n10000-cis50k-snp-gene-map.rds",
+    "pseudo-1kg-chr22-cau-lbs582-585-n10000-cis50k-ld-snp-map.rds"
+  ],
+  "configMD5": {
+    "pseudo-1kg-chr22-cau-lbs582-585-n10000-cis50k-snp-gene-map.rds": "a8d9badd520cc84d9acc80912d9e9897",
+    "pseudo-1kg-chr22-cau-lbs582-585-n10000-cis50k-ld-snp-map.rds": "33c1f6a0bb53907782140beedd02beb4"
+  }
+}

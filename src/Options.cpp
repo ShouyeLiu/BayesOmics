@@ -1,3 +1,4 @@
+#include "MemoryBudget.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This file is part of BayesOmics, a statistical genetics software package
@@ -30,6 +31,7 @@
 #include <numeric>
 
 #include "Options.hpp"
+#include "Threading.hpp"
 
 
   using std::vector;
@@ -83,16 +85,34 @@ void Options::readProgramOptions(int argc, const char *const argv[])
 }
 
 void Options::setThread(void){
+    const auto selection=Threading::select(threadRequest);
+    numThreads=selection.selected;
+    omp_set_dynamic(0);
+    omp_set_max_active_levels(1);
     omp_set_num_threads(numThreads);
-    if (numThreads == 1) return;
-    // if (multiThreadEigen) {
-    //     Eigen::initParallel();
-    //     Eigen::setNbThreads(numThread);
-    //     cout << "Eigen library is using " << Eigen::nbThreads( ) << " threads." << endl;
-    // }
-#pragma omp parallel
-    printf("Hello from thread %d, nthreads %d\n", omp_get_thread_num(), omp_get_num_threads());
+    LOGGER << "CPU threads: requested=" << threadRequest
+           << ", affinity=" << selection.affinity << ", available=" << selection.available
+           << ", selected=" << numThreads << endl;
+    if(!selection.automatic && selection.requested>selection.available)
+        LOGGER << "Requested thread count exceeds the current CPU allocation; capped at " << numThreads << "." << endl;
 }
+
+void Options::checkMutuallyExclusive(const boost::program_options::variables_map& vm,
+                              const std::vector<std::string>& opts) {
+    std::vector<std::string> used;
+    for (const auto& o : opts) {
+        if (vm.count(o)) used.push_back("--" + o);
+    }
+    if (used.size() > 1) {
+        std::string msg = "Mutually exclusive options used together: ";
+        for (size_t i = 0; i < used.size(); ++i) {
+            msg += used[i];
+            if (i < used.size() - 1) msg += ", ";
+        }
+        LOGGER.e(0,msg);
+    }
+}
+
 
   // populates members; error-checks
   bool Options::boostProgramOptionsRoutine(int argc, const char *const argv[])
@@ -112,7 +132,15 @@ void Options::setThread(void){
       // ("helpFull", "print help message with full option list")
       ("version,v", "show program version information")
       ("seed", po::value<int>(&seed), "random seed")
-      ("thread", po::value<int>(&numThreads),"number of computational threads")
+      ("thread", po::value<string>(&threadRequest)->default_value("auto"),"CPU threads: auto (default) or positive integer; bounded by CPU affinity and Slurm allocation")
+      ("memory", po::value<string>(&memoryRequest)->default_value("auto"),"Memory budget in MiB or auto; bounded by detected limits")
+      ("genotype-storage", po::value<string>(&genotypeStorage)->default_value("auto"),"Individual genotype storage: auto, dense or stream")
+      ("mcmc-storage", po::value<string>(&mcmcStorage)->default_value("auto"),"Retained MCMC storage: auto, dense or stream (requires file output)")
+      ("memory-info", "print detected memory budget and exit")
+      ("thread-info", "print resolved CPU thread settings and exit without analysis")
+      ("same-sample", po::bool_switch(&matchedGWAS), "GWAS-only exact likelihood: LD and GWAS use the same individuals; standardize by empirical genotype SD.")
+      ("fixed-residual", po::bool_switch(&fixedResidual), "Keep GWAS and molecular residual variances at their initialized values.")
+      ("phenotypic-variance", po::value<double>(&suppliedPhenotypicVariance), "Observed sample variance of the GWAS phenotype; required for --same-sample summary analysis.")
        ("out", po::value<string>(), "Specify output root filename")
        ("slurm-array-num", po::value<int>(&slurmArrayLimit), "set slurm array limit ");
 
@@ -135,6 +163,9 @@ void Options::setThread(void){
        "Input quantitative covariates from a plain text file, e.g. test.qcovar."
        "Each quantitative covariate is recognized as a continuous variable.")
       ("gene", po::value<string>(&geneInfoFile),"molecuar phenotype file")
+      ("gene-snp-map", po::value<string>(&geneSnpMapFile), "Explicit Gene SNP mapping; overrides physical cis windows.")
+      ("genotype-scale", po::value<string>(&genotypeScaleFile), "SNP SD Variance table describing the supplied genotype normalization.")
+      ("ldm-correlation", po::bool_switch(&ldCorrelation), "LD eigen inputs are correlations: align them to the empirical Variance in --genotype-scale. Omit for covariance LD on that genotype scale.")
       ("flist-path", po::value<string>(&subGenePath),"Specify path for esd  in filst ")
       ("plist-path", po::value<string>(&subGenePath),"Specify path for gene pheno in plist ");
 
@@ -151,16 +182,21 @@ void Options::setThread(void){
       ("make-block-ldm", " blocked LD matrix")
       ("block-info", po::value<string>(&ldBlockInfoFile),"LD matrix file")
       ("ldm", po::value<string>(&ldmatrixFile),"input LD matrix floder")
+      ("covm", po::value<string>(&ldmatrixFile),"input genotype covariance matrix floder")
       ("merge-block-ldm-info", "merge blocked LD matrix")
+      ("merge-prscs", "merge blocked LD matrix into PRS-CS format")
+      ("merge-covm", "merge blocked LD matrix into PRS-CS format")
       ("block", po::value<unsigned>(&includeBlock), "block ")
       ("keep-block",po::value<string>(),"keep block string")
       ("make-ldm-eigen","a low-rank LD matrix")
       // way 2. generate LD block from genotype directly.
       ("make-eigen","Generate low-rank LD matrix for gene region")
+      ("covariance","Generate genotype covariance matrix")
 
       // Generate gene low-rank LD matrix
       ("make-eigen-gene","Generate low-rank LD matrix for gene region")
       ("gene-snp-pair",po::value<string>(),"Generate low-rank LD matrix for gene region using gene-snp-pairs.")
+      ("gene-annotation",po::value<string>(&geneAnnotationFile),"Gene annotation: Chr Start End GeneID; cis window is centred on the midpoint.")
       ("merge-eigen-gene","merge multiple low-rank LD matrix.")
       ("eigen-list", po::value<string>(&geneListFile), "read file lists.")
 
@@ -184,7 +220,7 @@ void Options::setThread(void){
       ("keep-one-gene", po::value<string>(&includeSpecificGeneID),"Specifiy one gene to be included in the analysis.")
       ("eqtl-flist",po::value<string>(),"read flist file ")
 
-      // data management for ukb-ppp-protein data
+      // molecular protein QTL data management
       ("rsid", po::value<string>(&rsidMapFiles),"protein rsid")
       ("promap", po::value<string>(&proteinMapFile),"protein map")
       ("proPath", po::value<string>(&proteinPath),"protein pqtl path")
@@ -207,7 +243,7 @@ void Options::setThread(void){
       po::options_description bayesOption("MCMC options:");
       bayesOption.add_options()
       // MCMC settings
-      ("mcmc-type", po::value<string>(), "Specify AIAO or EIEO.")
+      ("mcmc-type", po::value<string>(), "Specify EIEO (the published integrative model).")
       ("eieo-latent", "Use latent variable or not to estimate gene effect.")
       ("chain-length", po::value<int>(&chainLength),
        "Specify the total number of iterations in MCMC, e.g. 5000 (default).")
@@ -219,15 +255,17 @@ void Options::setThread(void){
        "Output the sampled values for SNP effects and genetic architecture parameters for every 10 iterations (default)."
        "Only non-zero sampled values of SNP effects are written into a binary file.")
       ("no-mcmc-bin", "Suppress the output of MCMC samples of SNP effects.")
+      ("write-mcmc-bin", "Write thinned MCMC samples of all registered parameters in binary format, including burn-in.")
       ("write-mcmc-txt", "output of MCMC samples of SNP effects in txt format.")
       ("unscale-genotype","")
-      ("vare-sbrc","choose suitable residuals")
+      ("vare-sbrc","Sample the GWAS residual variance in summary omics models.")
+      ("sampleVarEps","Sample molecular residual variances in summary omics models.")
 
       // Bayes model settings
       ("bayes", po::value<string>(&bayesType), "Specify individual-level bayes model.")
       ("sbayes", po::value<string>(&bayesType), "Specify summary-level bayes model.")
       ("pi", po::value <string> (), "Starting value for the sampling.")
-      ("pi-intergenic", po::value <string> (), "Starting value for the sampling of pi for the AIAO model in inter-genic region.")
+      ("pi-intergenic", po::value <string> (), "Starting value for the sampling of pi in the intergenic region.")
       ("pi-genic", po::value <string> (), "Starting value for the sampling of pi for genic region.")
       ("pi-genic-gwas", po::value <string> (), "Starting value for the sampling of pi for the complex trait in EIEO model in in genic region.")
       ("pi-genic-xqtl", po::value <string> (), "Starting value for the sampling of pi for the molecular trait in the EIEO model in the genic region.")
@@ -289,14 +327,30 @@ void Options::setThread(void){
         exit(0);
       }
       po::notify(vm);  // throws an error if there are any problems
+      MemoryBudget::configure(memoryRequest,genotypeStorage,mcmcStorage);
+      if(vm.count("memory-info")){LOGGER << MemoryBudget::describe() << endl;exit(0);}
+      if(vm.count("thread-info")){setThread();exit(0);}
+      if (matchedGWAS) {
+        if ((bayesType != "C" && bayesType != "R") || vm.count("unscale-genotype"))
+          throw string("--same-sample currently requires GWAS-only C/R with standardized genotypes.");
+        if (vm.count("sbayes") && !(suppliedPhenotypicVariance > 0.0 && std::isfinite(suppliedPhenotypicVariance)))
+          throw string("--same-sample summary analysis requires a positive observed --phenotypic-variance.");
+        sampleOverlap = true;
+      }
       //////////////////////////////////////////////////////
+
+      //////////////////////////////////////////////////////
+      checkMutuallyExclusive(vm, {"make-block-ldm", "merge-prscs","merge-covm"});
       //////////////////////////////////////////////////////
       //// The following is flags of main part
-      //////////////////////////////////////////////////////
       //////////////////////////////////////////////////////
       /// Basic option
       if(vm.count("out")){
         title = vm["out"].as<string>();
+        //  std::string folderPath = std::filesystem::path(title).parent_path().string();
+        //  if(!Gadget::directoryExist(folderPath)){
+        //   Gadget::createDirectory(folderPath);
+        //  }
       } 
 
       if(vm.count("debug")){
@@ -376,6 +430,10 @@ void Options::setThread(void){
       if(vm.count("write-mcmc-txt")){
         writeTxtPosterior = true;
       }
+      if(vm.count("write-mcmc-bin")){
+        if(vm.count("no-mcmc-bin")) throw std::invalid_argument("Choose either --write-mcmc-bin or --no-mcmc-bin");
+        writeBinPosterior = true;
+      }
 
       if(vm.count("anno-binary")){
         isAnnoBinary = true;
@@ -427,11 +485,18 @@ void Options::setThread(void){
       if(vm.count("make-block-ldm")){
         analysisType = "LDmatrix";
         outLDmatType = "block";
+        // in this case, title is a folder.
+        Gadget::createDirectory(title);
+        subtitle = "make_block_ldm";
+        titleIsFolderBool = true;
       }
 
       //// ldm
       if(vm.count("ldm")){
         ldmatrixFile = vm["ldm"].as<string>();
+      }
+      if(vm.count("covm")){
+        ldmatrixFile = vm["covm"].as<string>();
       }
       if(vm.count("mldm")){
         ldmatrixFile = vm["mldm"].as<string>();
@@ -461,7 +526,21 @@ void Options::setThread(void){
         mergeLdm = true;
         outLDmatType = "block";
       }
-
+      if(vm.count("merge-prscs")){
+        analysisType = "LDmatrix";
+        mergeLdm = true;
+        outLDmatType = "prscs";
+      }
+      if(vm.count("merge-covm")){
+        analysisType = "LDmatrix";
+        mergeLdm = true;
+        outLDmatType = "covm";
+      }
+      if(vm.count("covariance")){
+        analysisType = "LDmatrix";
+        outLDmatType = "covm";
+        isCovBool = true;
+      }
       // make low-rank LD matrix using genotype directly
       if(vm.count("make-ldm-eigen")){
         analysisType = "LDmatrixEigen";
@@ -523,6 +602,9 @@ void Options::setThread(void){
         std::transform(mcmcTypeTmp.begin(), mcmcTypeTmp.end(), mcmcType.begin(), ::toupper);
       }
 
+      if (mcmcType != "EIEO") throw string("This public version supports EIEO only.");
+      if ((vm.count("bayes") || vm.count("sbayes")) && bayesType != "C" && bayesType != "R" && bayesType != "CO") throw string("Requested model is not part of this public release.");
+
       if(vm.count("eieo-latent")){
         eieoLatentBool = true;
       }
@@ -552,7 +634,7 @@ void Options::setThread(void){
       if(vm.count("pi")){
         Gadget::Tokenizer strvec;
         strvec.getTokens(vm["pi"].as<string>(), " ,");
-        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+        if (strvec.size() != 1 && (bayesType != "R")){
           // LOGGER.e(0,"When NOT using Bayes R or RO, its variants option you can only specify one mixture proportion parameter.");
           }
         if (strvec.size() == 1) {
@@ -561,7 +643,7 @@ void Options::setThread(void){
           pis.resize(strvec.size());
           for (unsigned j=0; j<strvec.size(); ++j) pis[j] = stod(strvec[j]);
         }
-        if(bayesType == "R" && bayesType == "RO"){
+        if(bayesType == "R"){
           if(ndists != pis.size()){LOGGER.e(0, "The number of pis should be consistent with that of gamma. Please check inputs of --gamma and --pi.");}
         }
       }
@@ -570,7 +652,7 @@ void Options::setThread(void){
       if(vm.count("pi-intergenic")){
         Gadget::Tokenizer strvec;
         strvec.getTokens(vm["pi-intergenic"].as<string>(), " ,");
-        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+        if (strvec.size() != 1 && (bayesType != "R")){
           // LOGGER.e(0,"When NOT using Bayes R or OR, its variants option you can only specify one mixture proportion parameter.");
           }
         if (strvec.size() == 1) {
@@ -579,14 +661,7 @@ void Options::setThread(void){
           piEffNonEqtlVec.resize(strvec.size());
           for (unsigned j=0; j<strvec.size(); ++j) piEffNonEqtlVec[j] = stod(strvec[j]);
         }
-        if(bayesType == "RO"){
-          if(piEffNonEqtlVec.sum() -1 > 1e-6 ){ LOGGER.e(0,"The sum of piEffNonEqtlVec (" + to_string(piEffNonEqtlVec.sum()) + ") should be equal to 1. Please check the input of --pi-intergenic .");}
-          if(ndists != piEffNonEqtlVec.size()){
-            LOGGER << "gamma value: " << ""; for(int i = 0; i < gamma.size(); ++i) {LOGGER << gamma(i) << " ";} LOGGER << endl;
-            LOGGER << "piEffNonEqtl value: " << ""; for(int i = 0; i < piEffNonEqtlVec.size(); ++i) {LOGGER << piEffNonEqtlVec(i) << " ";} LOGGER << endl;
-            LOGGER.e(0, "The number of piEffNonEqtlVec values should be consistent with that of gamma. Please check inputs of --gamma and --pi-intergenic.");
-          }
-        }
+        
       }
 
 
@@ -595,7 +670,7 @@ void Options::setThread(void){
       if(vm.count("pi-genic-gwas")){
         Gadget::Tokenizer strvec;
         strvec.getTokens(vm["pi-genic-gwas"].as<string>(), " ,");
-        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+        if (strvec.size() != 1 && (bayesType != "R")){
           // LOGGER.e(0,"When NOT using Bayes R or OR, its variants option you can only specify one mixture proportion parameter.");
           }
         if (strvec.size() == 1) {
@@ -605,7 +680,7 @@ void Options::setThread(void){
       if(vm.count("pi-genic-xqtl")){
         Gadget::Tokenizer strvec;
         strvec.getTokens(vm["pi-genic-xqtl"].as<string>(), " ,");
-        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+        if (strvec.size() != 1 && (bayesType != "R")){
           // LOGGER.e(0,"When NOT using Bayes R or OR, its variants option you can only specify one mixture proportion parameter.");
           }
         if (strvec.size() == 1) {
@@ -613,11 +688,11 @@ void Options::setThread(void){
         } 
       }
 
-      // for AIAO model 
+      // intergenic mixture settings 
       if(vm.count("pi-genic")){
         Gadget::Tokenizer strvec;
         strvec.getTokens(vm["pi-genic"].as<string>(), " ,");
-        if (strvec.size() != 1 && (bayesType != "R" && bayesType != "RO")){
+        if (strvec.size() != 1 && (bayesType != "R")){
           // LOGGER.e(0,"When NOT using Bayes R or RO, its variants option you can only specify one mixture proportion parameter.");
           }
         if (strvec.size() == 1) {
@@ -626,14 +701,7 @@ void Options::setThread(void){
           piEffEqtlVec.resize(strvec.size());
           for (unsigned j=0; j<strvec.size(); ++j) piEffEqtlVec[j] = stod(strvec[j]);
         }
-        if(bayesType == "RO"){
-          if(piEffEqtlVec.sum() - 1 > 1e-6){ LOGGER.e(0,"The sum of piEffEqtlVec (" + to_string(piEffEqtlVec.sum()) + ") should be equal to 1. Please check the input of --pi-genic .");}
-          if(ndists != piEffEqtlVec.size()){
-            LOGGER << "gamma value: " << ""; for(int i = 0; i < gamma.size(); ++i) {LOGGER << gamma(i) << " ";} LOGGER << endl;
-            LOGGER << "piEffEqtl value: " << ""; for(int i = 0; i < piEffEqtlVec.size(); ++i) {LOGGER << piEffEqtlVec(i) << " ";} LOGGER << endl;
-            LOGGER.e(0, "The number of piEffEqtlVec values should be consistent with that of gamma. Please check inputs of --gamma and --pi-genic .");
-            }
-        }
+        
       }
 
       ///  Bayesian model settings
@@ -650,12 +718,20 @@ void Options::setThread(void){
       setThread();
 
       //////////////////////////////////////////////////////
-      //////////////////////////////////////////////////////
-    // }catch (po::error &e) {
-    //   cerr << "ERROR: " << e.what() << endl << endl;
-    //   cerr << visible << endl;
-    //   return false;
-    // }
+      // joint command
+      if(vm.count("make-block-ldm") && vm.count("covariance")){
+        outLDmatType = "block";
+        analysisType = "LDmatrix";
+        isCovBool = true;
+        Gadget::createDirectory(title);
+        subtitle = "make_block_covariance_matrix";
+        titleIsFolderBool = true;
+      }
+
+
+
+    //////////////////////////////////////////////////////////
+
     } catch (const string &err_msg) {
         LOGGER.e(0, err_msg);
         return false;

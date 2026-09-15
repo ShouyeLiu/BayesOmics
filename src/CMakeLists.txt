@@ -9,27 +9,6 @@ file(GLOB SRCS "${PROJECT_SOURCE_DIR}/src/*.cpp")
 list(REMOVE_ITEM SRCS "${MAIN_SOURCE}")
 
 ##################################
-# set(STATLIB_DIR "/Users/uqsliu28/.local/lib/stats/include/")
-# include_directories(${STATLIB_DIR})
-# set(GCEM_DIR "/Users/uqsliu28/.local/lib/gcem/include/")
-# include_directories(${GCEM_DIR})
-## use julia 
-## Check operating system
-# if(APPLE)
-#     # macOS specific Julia path
-#     set(JULIA_INCLUDE "/opt/homebrew/Cellar/julia/1.9.4/include/julia")
-#     set(JULIA_LIBRARY_DIR "/opt/homebrew/Cellar/julia/1.9.4/lib/")
-#     set(JULIA_LIBRARY "/opt/homebrew/Cellar/julia/1.9.4/lib/libjulia.dylib") 
-# elseif(UNIX AND NOT APPLE)
-#     # Linux specific Julia path
-#     set(JULIA_INCLUDE "/QRISdata/Q4062/softwares/local/miniconda3/include/julia")
-#     set(JULIA_LIBRARY_DIR "/QRISdata/Q4062/softwares/local/miniconda3/lib/")
-#     set(JULIA_LIBRARY "/QRISdata/Q4062/softwares/local/miniconda3/lib/libjulia.so") 
-# endif()
-# find_package(Julia REQUIRED)
-include_directories(${JULIA_INCLUDE})
-link_directories(${JULIA_LIBRARY_DIR})
-##################################
 # add boost library
 ##################################
 # set(Boost_USE_STATIC_LIBS ON) 
@@ -41,6 +20,10 @@ FIND_PACKAGE(Eigen3 REQUIRED)
 FIND_PACKAGE(Armadillo REQUIRED)
 FIND_PACKAGE(Threads REQUIRED)
 FIND_PACKAGE(OpenMP REQUIRED)
+find_package(BLAS REQUIRED)
+find_package(LAPACK REQUIRED)
+find_package(HDF5 REQUIRED COMPONENTS C CXX)
+include_directories(${HDF5_INCLUDE_DIRS})
 # find_package(Zstd REQUIRED)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -71,6 +54,9 @@ target_link_libraries( ${CUR_LIB_NAME}
     # ${OpenMP_CXX_FLAGS}
     ${CMAKE_THREAD_LIBS_INIT}
     ${ARMADILLO_LIBRARIES}
+    ${BLAS_LIBRARIES}
+    ${LAPACK_LIBRARIES}
+    ${HDF5_LIBRARIES}
     )
 
 ##################################
@@ -84,7 +70,10 @@ target_link_libraries(${targetName}64
     # ${Boost_PROGRAM_OPTIONS_LIBRARIES}
     # Eigen3::Eigen
     # ${OpenMP_CXX_FLAGS}
-    # ${ARMADILLO_LIBRARIES} 
+    # ${ARMADILLO_LIBRARIES}
+    ${BLAS_LIBRARIES}
+    ${LAPACK_LIBRARIES}
+    ${HDF5_LIBRARIES} 
     # ${CMAKE_THREAD_LIBS_INIT} 
     )
 

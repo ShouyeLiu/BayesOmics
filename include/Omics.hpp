@@ -29,8 +29,6 @@
 #include "Gadgets.hpp"
 #include "ModelBayesCO.hpp"
 #include "ModelSBayesCO.hpp"
-#include "ModelBayesRO.hpp"
-#include "ModelSBayesRO.hpp"
 
 
 class Omics {

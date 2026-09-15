@@ -1,3 +1,6 @@
+#include <regex>
+#include <unordered_map>
+#include "MemoryBudget.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This file is part of BayesOmics, a statistical genetics software package
@@ -22,355 +25,487 @@
 #include "Data.hpp"
 #include <sys/stat.h>
 #include <dirent.h>
+// #include "H5Cpp.h"
+#include "hdf5.h"
+// using namespace H5;
 
 ///////////////////////////////////////////////////////////////////////////////////////
 ////////    Step 1. perform eigen-decomposition for ld blocks                   ///////
 ///////////////////////////////////////////////////////////////////////////////////////
-
-void Data::readLDBlockInfoFile(const string &ldBlockInfoFile){
-    // Read bim file: recombination rate is defined between SNP i and SNP i-1
+void Data::readLDBlockInfoFile(const string &ldBlockInfoFile) {
     ifstream in(ldBlockInfoFile.c_str());
-    if (!in) LOGGER.e(0,"can not open the file [" + ldBlockInfoFile + "] to read.");
-    LOGGER << "Reading ld block info from file [" + ldBlockInfoFile + "]." << endl;
+    if (!in) {
+        LOGGER.e(0, "can not open the file [" + ldBlockInfoFile + "] to read.");
+    }
+    LOGGER << "Reading ld block info from file [" << ldBlockInfoFile << "]." << endl;
+
     ldBlockInfoVec.clear();
     ldBlockInfoMap.clear();
+
     string header;
-    string id;
-    int  chr,start, stop;
-    int idx = 0;
+    Gadget::Tokenizer colData;
+    string inputStr;
+    string sep(" \t\n");
+
     getline(in, header);
-    while (in >> id >> chr >> start >> stop) {
-        LDBlockInfo *ld = new LDBlockInfo(idx++, id, chr);
-        ld->startPos    = start;
-        ld->endPos     = stop;
-        ldBlockInfoVec.push_back(ld);
-        if (ldBlockInfoMap.insert(pair<string, LDBlockInfo*>(id, ld)).second == false) {
-            LOGGER.e(0,"Duplicate LD block ID found: \"" + id + "\".");
+    colData.getTokens(header, sep);
+
+    const size_t ncol = colData.size();
+    string firstHeader = ncol ? colData[0] : "";
+    std::transform(
+        firstHeader.begin(), firstHeader.end(), firstHeader.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); }
+    );
+    const bool isFourColumnBlock =
+        ncol == 4 &&
+        (firstHeader == "block" || firstHeader == "ldblock" ||
+         firstHeader == "blockid");
+    const bool mergeIntervals = ncol == 4 && !isFourColumnBlock;
+
+    if (ncol == 3) {
+        LOGGER << "LDdetect format is used." << endl;
+    } else if (isFourColumnBlock) {
+        LOGGER << "ref4cM LD block format is used." << endl;
+    } else if (ncol == 4) {
+        LOGGER << "Gene interval format is used." << endl;
+    } else {
+        LOGGER.e(0, "Wrong format.");
+    }
+
+    struct RawBlock {
+        string id;
+        int chr;
+        int start;
+        int stop;
+    };
+
+    vector<RawBlock> rawBlocks;
+    int autoId = 1;
+    while (getline(in, inputStr)) {
+        if (inputStr.empty()) continue;
+        colData.getTokens(inputStr, sep);
+        if (colData.size() == 0) continue;
+        RawBlock block;
+        if (ncol == 3) {
+            if (colData.size() != 3) {
+                LOGGER.e(0, "Wrong number of columns in line: " + inputStr);
+            }
+            block.id = std::to_string(autoId++);
+            block.chr = std::stoi(colData[0].substr(3));
+            block.start = static_cast<int>(std::stod(colData[1]));
+            block.stop = static_cast<int>(std::stod(colData[2]));
+        } else {
+            if (colData.size() != 4) {
+                LOGGER.e(0, "Wrong number of columns in line: " + inputStr);
+            }
+            block.id = colData[0];
+            block.chr = std::stoi(colData[1]);
+            block.start = static_cast<int>(std::stod(colData[2]));
+            block.stop = static_cast<int>(std::stod(colData[3]));
         }
+        if (block.start > block.stop) {
+            std::swap(block.start, block.stop);
+        }
+        rawBlocks.push_back(block);
     }
     in.close();
-    numLDBlocks = (unsigned) ldBlockInfoVec.size();
-    LOGGER << numLDBlocks << " GWAS LD Blocks to be included from [" + ldBlockInfoFile + "]." << endl;
+    // Sort by chromosome first, then by physical position within chromosome.
+    std::sort(
+        rawBlocks.begin(),
+        rawBlocks.end(),
+        [](const RawBlock &a, const RawBlock &b) {
+            if (a.chr != b.chr) return a.chr < b.chr;
+            if (a.start != b.start) return a.start < b.start;
+            if (a.stop != b.stop) return a.stop < b.stop;
+            return a.id < b.id;
+        }
+    );
+    vector<RawBlock> outputBlocks;
+    if (!mergeIntervals) {
+        // Each row in an LD block file defines one block, even when two
+        // blocks share a boundary or overlap.
+        outputBlocks = rawBlocks;
+    } else if (!rawBlocks.empty()) {
+        // Gene intervals can overlap, so combine overlapping regions on the
+        // same chromosome before constructing their LD matrices.
+        RawBlock current = rawBlocks.front();
+        for (size_t i = 1; i < rawBlocks.size(); ++i) {
+            const RawBlock &next = rawBlocks[i];
+            const bool sameChr = next.chr == current.chr;
+            const bool overlap = next.start <= current.stop;
+            if (sameChr && overlap) {
+                current.start = std::min(current.start, next.start);
+                current.stop = std::max(current.stop, next.stop);
+            } else {
+                outputBlocks.push_back(current);
+                current = next;
+            }
+        }
+        outputBlocks.push_back(current);
+    }
+    int idx = 0;
+    for (const RawBlock &block : outputBlocks) {
+        const string blockId = isFourColumnBlock
+            ? block.id
+            : std::to_string(idx + 1);
+
+        LDBlockInfo *ld = new LDBlockInfo(
+            idx,
+            blockId,
+            block.chr
+        );
+        ld->startPos = block.start;
+        ld->endPos = block.stop;
+        ldBlockInfoVec.push_back(ld);
+        if (!ldBlockInfoMap.insert({blockId, ld}).second) {
+            LOGGER.e(
+                0,
+                "Duplicate LD block ID found: \"" +
+                blockId + "\"."
+            );
+        }
+
+        idx++;
+    }
+    numLDBlocks = static_cast<unsigned>(ldBlockInfoVec.size());
+    LOGGER << rawBlocks.size() << " input intervals read; "
+           << numLDBlocks << " LD Blocks retained"
+           << (mergeIntervals ? " after overlap merging" : "") << " from ["
+           << ldBlockInfoFile
+           << "]."
+           << endl;
 }
 
-void Data::eigenDecomposition( const MatrixXf &X, const float &prop, VectorXf &eigenValAdjusted, MatrixXf &eigenVecAdjusted, float &sumPosEigVal){
-    // VectorXf cumsumNonNeg; // cumulative sums of non-negative values
-    sumPosEigVal = 0.0;
-
-    SelfAdjointEigenSolver<MatrixXf> eigensolver(X);
-    VectorXf eigenVal = eigensolver.eigenvalues();
-    MatrixXf eigenVec = eigensolver.eigenvectors();
-    int revIdx = eigenVal.size();
-    VectorXf cumsumNonNeg(revIdx);
-    cumsumNonNeg.setZero();
-    revIdx = revIdx -1;
-    if(eigenVal(revIdx) < 0) cout << "Error, all eigenvector are negative" << endl;
-    cumsumNonNeg(revIdx) = eigenVal(revIdx);
-    sumPosEigVal = eigenVal(revIdx);
-    revIdx = revIdx -1;
-    
-    while( eigenVal(revIdx) > 1e-10 ){
-        sumPosEigVal = sumPosEigVal + eigenVal(revIdx);
-        cumsumNonNeg(revIdx) = eigenVal(revIdx) + cumsumNonNeg(revIdx + 1);
-        revIdx =revIdx - 1;
-        if(revIdx < 0) break;
-    }
-    // cout << "revIdx: " << revIdx << endl;
-    // cout << "size: " << eigenVal.size()  << " eigenVal: " << eigenVal << endl;
-    // cout << "cumsumNoNeg: " << cumsumNonNeg << endl;
-    cumsumNonNeg = cumsumNonNeg/sumPosEigVal;
-    bool haveValue = false;
-    // cout << "cumsumNonNeg: " << cumsumNonNeg << endl;
-    // cout << "revIdx : " << revIdx << endl;
-    // cout << "revIdx: "  << revIdx  << endl;
-    for (revIdx = revIdx + 1; revIdx < eigenVal.size(); revIdx ++ ){
-        // cout << "revIdx: " << revIdx << " cumsumNonNeg: " << cumsumNonNeg(revIdx) << endl;
-        if(prop >= cumsumNonNeg(revIdx) ){
-            revIdx = revIdx -1;
-            haveValue = true;
-            break;
-        }
-    }
-    // cout << "revIdx : " << revIdx << endl;
-    if(!haveValue) revIdx = eigenVal.size() - 1;
-    // cout << "cumsumNonNeg: " << cumsumNonNeg.size() << endl;
-    // cout << "cumsumNoNeg: " << cumsumNonNeg << endl;
-    // cout << "revIdx: "  << revIdx  << endl;
-
-    eigenVecAdjusted = eigenVec.rightCols(eigenVal.size() - revIdx);
-    eigenValAdjusted = eigenVal.tail(eigenVal.size() - revIdx);
-    // cout << "eigenValAdjusted size: " << eigenValAdjusted.size() << " eigenValue eventually: " << eigenValAdjusted << endl;
-    //eigenvalueNum = eigenVal.size() - revIdx;
-    // cout << endl;
+void Data::eigenDecomposition(const MatrixXf &X, const float &prop, VectorXf &values, MatrixXf &vectors, float &sumPositive) {
+    if (X.rows() == 0 || X.rows() != X.cols() || !X.allFinite() || !(prop > 0 && prop <= 1))
+        throw std::runtime_error("Invalid LD matrix or eigenvalue variance proportion (expected 0 < cutoff <= 1)");
+    const MatrixXd symmetric = .5 * (X.cast<double>() + X.transpose().cast<double>());
+    SelfAdjointEigenSolver<MatrixXd> solver(symmetric);
+    if (solver.info() != Eigen::Success) throw std::runtime_error("LD eigen decomposition failed");
+    const auto &lambda = solver.eigenvalues();
+    if (lambda[lambda.size()-1] <= 0 || lambda[0] < -1e-4 * lambda[lambda.size()-1])
+        throw std::runtime_error("LD matrix has no positive variance or is materially indefinite");
+    int first = 0;
+    while (first < lambda.size() && lambda[first] <= 1e-10) ++first;
+    const double total = lambda.tail(lambda.size()-first).sum();
+    int start = lambda.size(); double retained = 0;
+    // Preserve the on-disk ascending order; include the minimal leading modes.
+    while (start > first && (start == lambda.size() || prop == 1.f ||
+        retained + 2*std::numeric_limits<float>::epsilon()*total < double(prop)*total)) retained += lambda[--start];
+    values = lambda.tail(lambda.size()-start).cast<float>();
+    vectors = solver.eigenvectors().rightCols(values.size()).cast<float>();
+    sumPositive = static_cast<float>(total);
 }
 
-MatrixXd Data::generateLDmatrixPerBlock(const string &bedFile, const vector<string> &snplists){
-    int numSnpInRange = snplists.size();
-    IndInfo *indi = NULL;
-    SnpInfo *snpj = NULL;
-    SnpInfo *snpk = NULL;
-
-    snpj = snpInfoMap.at(snplists[0]); // start
-    snpk = snpInfoMap.at(snplists[numSnpInRange - 1]); // end;
-    unsigned start = snpj->index;
-    unsigned end = snpk->index;
-    
-    if (numIncdSnps == 0) LOGGER.e(0,"No SNP is retained for analysis.");
-    if (numKeptInds == 0) LOGGER.e(0,"No individual is retained for analysis.");
-    // if (start >= numIncdSnps) LOGGER.e(0,"Specified a SNP range of " + snpRange + " but " + to_string(static_cast<long long>(numIncdSnps)) + " SNPs are included.");
-
-    //////////////////////////////////////////////////////
-    // Step 1. read in the genotypes of SNPs in the given range
-    //////////////////////////////////////////////////////
-    
-    const int bedToGeno[4] = {2, -9, 1, 0};
-    unsigned size = (numInds+3)>>2;
-    
-    MatrixXd ZP(numSnpInRange, numKeptInds);  // SNP x Ind
-    VectorXd Dtmp;
-    Dtmp.setZero(numSnpInRange);
-
-    if (numKeptInds < 2) LOGGER.e(0, " Cannot calculate LD matrix with number of individuals < 2.");
-    
-    FILE *in1 = fopen(bedFile.c_str(), "rb");
-    if (!in1) LOGGER.e(0, " can not open the file [" + bedFile + "] to read.");
-    // cout << "Reading PLINK BED file from [" + bedFile + "] in SNP-major format ..." << endl;
-    char header[3];
-    fread(header, sizeof(header), 1, in1);
-    if (!in1 || header[0] != 0x6c || header[1] != 0x1b || header[2] != 0x01) {
-        cerr << "Error: Incorrect first three bytes of bed file: " << bedFile << endl;
-        exit(1);
+float computeAdaptiveLambda(const Eigen::MatrixXf& R, float eps = 1e-5f) {
+    // Perform eigen decomposition for symmetric matrix
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXf> es(R);
+    // Fallback in case decomposition fails (rare but safe guard)
+    if (es.info() != Eigen::Success) {
+        return 1e-3f;
     }
-
-    int genoValue;
-    unsigned i, j, k;
-    unsigned incj, inck; // index of included SNP
-    unsigned long long skipj = 0;
-    unsigned nmiss;
-    float mean;
-    
-    set<int> chromInRange;
-    
-    for (j = 0, incj = 0; j < numSnps; j++) {
-        snpj = snpInfoVec[j];
-        
-        if (snpj->index < start || !snpj->included) {
-            skipj += size;
-            continue;
-        }
-
-        // check if snp exist in snplist in case gap situation
-        auto it = std::find(snplists.begin(), snplists.end(), snpj->rsID);
-        if (it == snplists.end()) {
-            skipj += size;
-            continue;
-        } 
-        
-        if (skipj) fseek(in1, skipj, SEEK_CUR);
-        skipj = 0;
-        
-        char *bedLineIn = new char[size];
-        fread(bedLineIn, sizeof(char), size, in1);
-        
-        chromInRange.insert(snpj->chrom);
-        
-        mean = 0.0;
-        nmiss = 0;
-        
-        for (i = 0; i < numInds; i++) {
-            indi = indInfoVec[i];
-            if (!indi->kept) continue;
-            genoValue = bedToGeno[(bedLineIn[i>>2]>>((i&3)<<1))&3];
-            ZP(incj, indi->index) = genoValue;
-            if (genoValue == -9) ++nmiss;
-            else mean += genoValue;
-        }
-        delete[] bedLineIn;
-        
-        // fill missing values with the mean
-        snpj->sampleSize = numKeptInds-nmiss;
-        mean /= float(snpj->sampleSize);
-        if (nmiss) {
-            for (i=0; i<numKeptInds; ++i) {
-                if (ZP(incj, i) == -9) ZP(incj, i) = mean;
-            }
-        }
-        
-        // compute allele frequency
-        snpj->af = 0.5f*mean;
-        snp2pq[incj] = snpj->twopq = 2.0f*snpj->af*(1.0f-snpj->af);
-        
-        if (snp2pq[incj]==0) LOGGER.e(0, " " + snpj->rsID + " is a fixed SNP (MAF=0)!");
-        
-        Dtmp[incj] = Gadget::calcVariance(ZP.row(incj))*numKeptInds;
-        ZP.row(incj) = (ZP.row(incj).array() - ZP.row(incj).mean())/sqrt(Dtmp[incj]);
-        if (++incj == numSnpInRange) break;
+    // Smallest eigenvalue (since eigenvalues are sorted in ascending order)
+    float lmin = es.eigenvalues()(0);
+    // If matrix is already sufficiently positive definite
+    if (lmin >= eps) {
+        // Return very small shrinkage (almost no change)
+        return 1e-6f;
     }
-    
-    fclose(in1);
-    
-    ZPZdiag = ZP.rowwise().squaredNorm();
-    
-    //////////////////////////////////////////////////////
-    // Step 2. read in the bed file again to compute Z'Z
-    //////////////////////////////////////////////////////
-    
-    MatrixXd denseZPZ;
-    denseZPZ.setZero(numSnpInRange, numSnpInRange);
-    VectorXd Zk(numKeptInds);
-    Dtmp.setZero(numSnpInRange);
-    
-    FILE *in2 = fopen(bedFile.c_str(), "rb");
-    fseek(in2, 3, SEEK_SET);
-    unsigned long long skipk = 0;
-    
-    set<int>::iterator setend = chromInRange.end();
-
-    if (numSkeletonSnps) {
-        for (k = 0, inck = 0; k < numSnps; k++) {
-            snpk = snpInfoVec[k];
-            
-            // if (!snpk->included) {
-            if (snpk->index < start || !snpk->included) {
-                skipk += size;
-                continue;
-            }
-
-            // check if snp exist in snplist in case gap situation
-            auto it = std::find(snplists.begin(), snplists.end(), snpk->rsID);
-            if (it == snplists.end()) {
-                skipk += size;
-                continue;
-            } 
-
-            if (chromInRange.find(snpk->chrom) == setend && !snpk->skeleton) {
-                skipk += size;
-                ++inck;       // ensure the index is correct
-                continue;
-            }
-            
-            if (skipk) fseek(in2, skipk, SEEK_CUR);
-            skipk = 0;
-            
-            char *bedLineIn = new char[size];
-            fread(bedLineIn, sizeof(char), size, in2);
-            
-            mean = 0.0;
-            nmiss = 0;
-            
-            for (i = 0; i < numInds; i++) {
-                indi = indInfoVec[i];
-                if (!indi->kept) continue;
-                genoValue = bedToGeno[(bedLineIn[i>>2]>>((i&3)<<1))&3];
-                Zk[indi->index] = genoValue;
-                if (genoValue == -9) ++nmiss;   // missing genotype
-                else mean += genoValue;
-            }
-            delete[] bedLineIn;
-            
-            // fill missing values with the mean
-            snpk->sampleSize = numKeptInds-nmiss;
-            mean /= float(snpk->sampleSize);
-            if (nmiss) {
-                for (i=0; i<numKeptInds; ++i) {
-                    if (Zk[i] == -9) Zk[i] = mean;
-                }
-            }
-            
-            // compute allele frequency
-            snpk->af = 0.5f*mean;
-            snp2pq[inck] = snpk->twopq = 2.0f*snpk->af*(1.0f-snpk->af);
-            
-            if (snp2pq[inck]==0) LOGGER.e(0, " " + snpk->rsID + " is a fixed SNP (MAF=0)!");
-            Dtmp[inck] = Gadget::calcVariance(Zk.row(inck))*numKeptInds;   // calculate  variances fro each snp;
-            Zk = (Zk.array() - Zk.mean())/sqrt(Dtmp[inck]); // center and standardize genotype
-            denseZPZ.col(inck) = ZP * Zk;
-
-            //++inck;
-            if (++inck == numSnpInRange) break;
-        }
+    // Compute minimal lambda such that:
+    // (1 - lambda) * lmin + lambda >= eps
+    // => lambda >= (eps - lmin) / (1 - lmin)
+    float denom = 1.0f - lmin;
+    float lambda;
+    if (denom <= 1e-8f) {
+        // Numerical edge case (lmin ~ 1)
+        lambda = 1e-3f;
+    } else {
+        lambda = (eps - lmin) / denom;
     }
-    else {
-        for (k = 0, inck = 0; k < numSnps; k++) {
-            snpk = snpInfoVec[k];
-            
-            // if (!snpk->included) {
-            if (snpk->index < start || !snpk->included) {
-                skipk += size;
-                continue;
-            }
-
-            // check if snp exist in snplist in case gap situation
-            auto it = std::find(snplists.begin(), snplists.end(), snpk->rsID);
-            if (it == snplists.end()) {
-                skipk += size;
-                continue;
-            } 
-
-            if (skipk) fseek(in2, skipk, SEEK_CUR);
-            skipk = 0;
-            
-            char *bedLineIn = new char[size];
-            fread(bedLineIn, sizeof(char), size, in2);
-            
-            mean = 0.0;
-            nmiss = 0;
-            
-            for (i = 0; i < numInds; i++) {
-                indi = indInfoVec[i];
-                if (!indi->kept) continue;
-                genoValue = bedToGeno[(bedLineIn[i>>2]>>((i&3)<<1))&3];
-                Zk[indi->index] = genoValue;
-                if (genoValue == -9) ++nmiss;   // missing genotype
-                else mean += genoValue;
-            }
-            delete[] bedLineIn;
-            
-            // fill missing values with the mean
-            snpk->sampleSize = numKeptInds-nmiss;
-            mean /= float(snpk->sampleSize);
-            if (nmiss) {
-                for (i=0; i<numKeptInds; ++i) {
-                    if (Zk[i] == -9) Zk[i] = mean;
-                }
-            }
-            
-            // compute allele frequency
-            snpk->af = 0.5f*mean;
-            snp2pq[inck] = snpk->twopq = 2.0f*snpk->af*(1.0f-snpk->af);
-            
-            if (snp2pq[inck]==0) LOGGER.e(0, " " + snpk->rsID + " is a fixed SNP (MAF=0)!");
-
-            Dtmp[inck] = Gadget::calcVariance(Zk)*numKeptInds;
-
-            Zk = (Zk.array() - Zk.mean())/sqrt(Dtmp[inck]);
-            
-            denseZPZ.col(inck) = ZP * Zk;
-
-            if (++inck == numSnpInRange) break;
-        }
-    }
-
-    fclose(in2);
-
-    for (k = 0, inck = 0; k < numSnps; k++) {
-        snpk = snpInfoVec[k];
-        // if (!snpk->included) {
-        if (snpk->index < start || !snpk->included) {
-            skipk += size;
-            continue;
-        }
-        if (skipk) fseek(in2, skipk, SEEK_CUR);
-       skipk = 0;
-    //    if(inck < 6){
-    //     cout << snpk->rsID << " ";
-    //    }
-       inck ++; 
-    }
-    cout << endl;
-    // LOGGER << "corr: " << denseZPZ.block(0, 0, 5, 5) << endl;
-    return denseZPZ;
+    // Add small safety margin to avoid numerical instability
+    lambda *= 1.05f;
+    // Clamp lambda to a reasonable range to avoid over-shrinkage
+    if (lambda < 1e-6f) lambda = 1e-6f;
+    if (lambda > 0.1f)  lambda = 0.1f;
+    return lambda;
 }
+////////////////////////////////////////////////////
+// Shrink towards identity
+////////////////////////////////////////////////////
+void shrinkLD(MatrixXf& R, float lambda) {
+    int n = R.rows();
+
+    R *= (1.0f - lambda);
+
+    for (int i = 0; i < n; ++i) {
+        R(i, i) += lambda;
+    }
+}
+
+MatrixXd Data::generateLDmatrixPerBlock(const std::string &bedFile, const std::vector<std::string> &ids, bool covariance) {
+    if (ids.empty() || numKeptInds < 2) throw std::runtime_error("LD requires SNPs and at least two individuals");
+    const size_t stride = (uint64_t(numInds)+3)/4;
+    std::ifstream bed(bedFile, std::ios::binary);
+    unsigned char header[3]; bed.read(reinterpret_cast<char*>(header),3);
+    if (!bed || header[0]!=0x6c || header[1]!=0x1b || header[2]!=1)
+        throw std::runtime_error("Invalid SNP-major BED header: "+bedFile);
+    // BED positions are raw BIM indices; requested LD order may differ.
+    std::unordered_map<std::string,size_t> rawIndex;
+    for(size_t j=0;j<snpInfoVec.size();++j) rawIndex.emplace(snpInfoVec[j]->rsID,j);
+    MatrixXd x(numKeptInds,ids.size());
+    std::vector<unsigned char> packed(stride);
+    const double decode[4]={2.,-9.,1.,0.};
+    for(size_t j=0;j<ids.size();++j) {
+        auto found=rawIndex.find(ids[j]);
+        if(found==rawIndex.end()) throw std::runtime_error("LD SNP missing from BIM: "+ids[j]);
+        bed.seekg(3+uint64_t(found->second)*stride);
+        bed.read(reinterpret_cast<char*>(packed.data()),stride);
+        if(!bed) throw std::runtime_error("Truncated BED while reading "+ids[j]);
+        double sum=0; size_t observed=0;
+        for(size_t i=0;i<indInfoVec.size();++i) if(indInfoVec[i]->kept) {
+            const double value=decode[(packed[i/4] >> (2*(i%4)))&3];
+            x(indInfoVec[i]->index,j)=value;
+            if(value!=-9){sum+=value;++observed;}
+        }
+        if(observed<2) throw std::runtime_error("Insufficient observed genotypes for "+ids[j]);
+        const double mean=sum/observed;
+        for(size_t i=0;i<numKeptInds;++i) x(i,j)=x(i,j)==-9 ? 0 : x(i,j)-mean;
+        const double ss=x.col(j).squaredNorm();
+        if(!(ss>0)) throw std::runtime_error("Monomorphic SNP in LD reference: "+ids[j]);
+        auto snp=snpInfoVec[found->second];
+        snp->af=mean/2; snp->twopq=2*snp->af*(1-snp->af); snp->sampleSize=numKeptInds;
+        if(!covariance) x.col(j)/=std::sqrt(ss);
+    }
+    // Exact sample correlation, without implicit ridge/shrinkage. Double
+    // accumulation also avoids the N-dependent float summation error.
+    MatrixXd result=x.transpose()*x;
+    if(covariance) result/=numKeptInds; // established population covariance convention
+    else result.diagonal().setOnes();
+    return result;
+}
+
+// MatrixXd Data::generateLDmatrixPerBlock(const string &bedFile, const vector<string> &snplists,const bool isCovBool){
+//     int numSnpInRange = snplists.size();
+//     IndInfo *indi = NULL;
+//     SnpInfo *snpj = NULL;
+//     SnpInfo *snpk = NULL;
+//     snpj = snpInfoMap.at(snplists[0]); // start
+//     snpk = snpInfoMap.at(snplists[numSnpInRange - 1]); // end;
+//     unsigned start = snpj->index;
+//     unsigned end = snpk->index;
+//     if (numIncdSnps == 0) LOGGER.e(0,"No SNP is retained for analysis.");
+//     if (numKeptInds == 0) LOGGER.e(0,"No individual is retained for analysis.");
+//     // if (start >= numIncdSnps) LOGGER.e(0,"Specified a SNP range of " + snpRange + " but " + to_string(static_cast<long long>(numIncdSnps)) + " SNPs are included.");
+//     //////////////////////////////////////////////////////
+//     // Step 1. read in the genotypes of SNPs in the given range
+//     //////////////////////////////////////////////////////
+//     const int bedToGeno[4] = {2, -9, 1, 0};
+//     unsigned size = (numInds+3)>>2;
+//     MatrixXd ZP(numSnpInRange, numKeptInds);  // SNP x Ind
+//     VectorXd Dtmp;
+//     Dtmp.setZero(numSnpInRange);
+//     if (numKeptInds < 2) LOGGER.e(0, " Cannot calculate LD matrix with number of individuals < 2.");
+//     FILE *in1 = fopen(bedFile.c_str(), "rb");
+//     if (!in1) LOGGER.e(0, " can not open the file [" + bedFile + "] to read.");
+//     // cout << "Reading PLINK BED file from [" + bedFile + "] in SNP-major format ..." << endl;
+//     char header[3];
+//     fread(header, sizeof(header), 1, in1);
+//     if (!in1 || header[0] != 0x6c || header[1] != 0x1b || header[2] != 0x01) {
+//         cerr << "Error: Incorrect first three bytes of bed file: " << bedFile << endl;
+//         exit(1);
+//     }
+//     int genoValue;
+//     unsigned i, j, k;
+//     unsigned incj, inck; // index of included SNP
+//     unsigned long long skipj = 0;
+//     unsigned nmiss;
+//     float mean;
+//     set<int> chromInRange;
+//     for (j = 0, incj = 0; j < numSnps; j++) {
+//         snpj = snpInfoVec[j];
+//         if (snpj->index < start || !snpj->included) {
+//             skipj += size;
+//             continue;
+//         }
+//         // check if snp exist in snplist in case gap situation
+//         auto it = std::find(snplists.begin(), snplists.end(), snpj->rsID);
+//         if (it == snplists.end()) {
+//             skipj += size;
+//             continue;
+//         } 
+//         if (skipj) fseek(in1, skipj, SEEK_CUR);
+//         skipj = 0;
+//         char *bedLineIn = new char[size];
+//         fread(bedLineIn, sizeof(char), size, in1);
+//         chromInRange.insert(snpj->chrom);
+//         mean = 0.0;
+//         nmiss = 0;
+//         for (i = 0; i < numInds; i++) {
+//             indi = indInfoVec[i];
+//             if (!indi->kept) continue;
+//             genoValue = bedToGeno[(bedLineIn[i>>2]>>((i&3)<<1))&3];
+//             ZP(incj, indi->index) = genoValue;
+//             if (genoValue == -9) ++nmiss;
+//             else mean += genoValue;
+//         }
+//         delete[] bedLineIn;
+//         // fill missing values with the mean
+//         snpj->sampleSize = numKeptInds-nmiss;
+//         mean /= float(snpj->sampleSize);
+//         if (nmiss) {
+//             for (i=0; i<numKeptInds; ++i) {
+//                 if (ZP(incj, i) == -9) ZP(incj, i) = mean;
+//             }
+//         }
+//         // compute allele frequency
+//         snpj->af = 0.5f*mean;
+//         snp2pq[incj] = snpj->twopq = 2.0f*snpj->af*(1.0f-snpj->af);
+//         if (snp2pq[incj]==0) LOGGER.e(0, " " + snpj->rsID + " is a fixed SNP (MAF=0)!");
+//         Dtmp[incj] = Gadget::calcVariance(ZP.row(incj)); // *numKeptInds;
+//         // ZP.row(incj) = (ZP.row(incj).array() - ZP.row(incj).mean())/sqrt(Dtmp[incj]);
+
+//         ZP.row(incj) = (ZP.row(incj).array() - ZP.row(incj).mean());
+//         if(!isCovBool) ZP.row(incj) = ZP.row(incj)/sqrt(Dtmp[incj]);
+
+//         if (++incj == numSnpInRange) break;
+//     }
+//     fclose(in1);
+//     ZPZdiag = ZP.rowwise().squaredNorm();
+//     //////////////////////////////////////////////////////
+//     // Step 2. read in the bed file again to compute Z'Z
+//     //////////////////////////////////////////////////////
+//     MatrixXd denseZPZ;
+//     denseZPZ.setZero(numSnpInRange, numSnpInRange);
+//     VectorXd Zk(numKeptInds);
+//     Dtmp.setZero(numSnpInRange);
+//     FILE *in2 = fopen(bedFile.c_str(), "rb");
+//     fseek(in2, 3, SEEK_SET);
+//     unsigned long long skipk = 0;
+//     set<int>::iterator setend = chromInRange.end();
+//     if (numSkeletonSnps) {
+//         for (k = 0, inck = 0; k < numSnps; k++) {
+//             snpk = snpInfoVec[k];
+//             // if (!snpk->included) {
+//             if (snpk->index < start || !snpk->included) {
+//                 skipk += size;
+//                 continue;
+//             }
+//             // check if snp exist in snplist in case gap situation
+//             auto it = std::find(snplists.begin(), snplists.end(), snpk->rsID);
+//             if (it == snplists.end()) {
+//                 skipk += size;
+//                 continue;
+//             } 
+//             if (chromInRange.find(snpk->chrom) == setend && !snpk->skeleton) {
+//                 skipk += size;
+//                 ++inck;       // ensure the index is correct
+//                 continue;
+//             }
+//             if (skipk) fseek(in2, skipk, SEEK_CUR);
+//             skipk = 0;
+//             char *bedLineIn = new char[size];
+//             fread(bedLineIn, sizeof(char), size, in2);
+//             mean = 0.0;
+//             nmiss = 0;
+//             for (i = 0; i < numInds; i++) {
+//                 indi = indInfoVec[i];
+//                 if (!indi->kept) continue;
+//                 genoValue = bedToGeno[(bedLineIn[i>>2]>>((i&3)<<1))&3];
+//                 Zk[indi->index] = genoValue;
+//                 if (genoValue == -9) ++nmiss;   // missing genotype
+//                 else mean += genoValue;
+//             }
+//             delete[] bedLineIn;
+//             // fill missing values with the mean
+//             snpk->sampleSize = numKeptInds-nmiss;
+//             mean /= float(snpk->sampleSize);
+//             if (nmiss) {
+//                 for (i=0; i<numKeptInds; ++i) {
+//                     if (Zk[i] == -9) Zk[i] = mean;
+//                 }
+//             }
+//             // compute allele frequency
+//             snpk->af = 0.5f*mean;
+//             snp2pq[inck] = snpk->twopq = 2.0f*snpk->af*(1.0f-snpk->af);
+//             if (snp2pq[inck]==0) LOGGER.e(0, " " + snpk->rsID + " is a fixed SNP (MAF=0)!");
+//             Dtmp[inck] = Gadget::calcVariance(Zk.row(inck)); //*numKeptInds;   // calculate  variances fro each snp;
+//             // Zk = (Zk.array() - Zk.mean())/sqrt(Dtmp[inck]); // center and standardize genotype
+//             Zk = (Zk.array() - Zk.mean());
+//             if(!isCovBool) Zk = Zk/sqrt(Dtmp[inck]);
+
+//             denseZPZ.col(inck) = ZP * Zk /numKeptInds;
+//             if(isCovBool) denseZPZ.col(inck) = denseZPZ.col(inck)/numKeptInds;
+//             //++inck;
+//             if (++inck == numSnpInRange) break;
+//         }
+//     }
+//     else {
+//         for (k = 0, inck = 0; k < numSnps; k++) {
+//             snpk = snpInfoVec[k];
+//             // if (!snpk->included) {
+//             if (snpk->index < start || !snpk->included) {
+//                 skipk += size;
+//                 continue;
+//             }
+//             // check if snp exist in snplist in case gap situation
+//             auto it = std::find(snplists.begin(), snplists.end(), snpk->rsID);
+//             if (it == snplists.end()) {
+//                 skipk += size;
+//                 continue;
+//             } 
+//             if (skipk) fseek(in2, skipk, SEEK_CUR);
+//             skipk = 0;
+//             char *bedLineIn = new char[size];
+//             fread(bedLineIn, sizeof(char), size, in2);
+//             mean = 0.0;
+//             nmiss = 0;
+//             for (i = 0; i < numInds; i++) {
+//                 indi = indInfoVec[i];
+//                 if (!indi->kept) continue;
+//                 genoValue = bedToGeno[(bedLineIn[i>>2]>>((i&3)<<1))&3];
+//                 Zk[indi->index] = genoValue;
+//                 if (genoValue == -9) ++nmiss;   // missing genotype
+//                 else mean += genoValue;
+//             }
+//             delete[] bedLineIn;
+//             // fill missing values with the mean
+//             snpk->sampleSize = numKeptInds-nmiss;
+//             mean /= float(snpk->sampleSize);
+//             if (nmiss) {
+//                 for (i=0; i<numKeptInds; ++i) {
+//                     if (Zk[i] == -9) Zk[i] = mean;
+//                 }
+//             }
+//             // compute allele frequency
+//             snpk->af = 0.5f*mean;
+//             snp2pq[inck] = snpk->twopq = 2.0f*snpk->af*(1.0f-snpk->af);
+//             if (snp2pq[inck]==0) LOGGER.e(0, " " + snpk->rsID + " is a fixed SNP (MAF=0)!");
+//             Dtmp[inck] = Gadget::calcVariance(Zk); //*numKeptInds;
+//             // Zk = (Zk.array() - Zk.mean())/sqrt(Dtmp[inck]);
+//             Zk = (Zk.array() - Zk.mean());
+//             if(!isCovBool) Zk = Zk/sqrt(Dtmp[inck]);
+            
+//             denseZPZ.col(inck) = ZP * Zk /numKeptInds;
+//             if(isCovBool) denseZPZ.col(inck) = denseZPZ.col(inck)/numKeptInds;
+//             if (++inck == numSnpInRange) break;
+//         }
+//     }
+//     fclose(in2);
+//     for (k = 0, inck = 0; k < numSnps; k++) {
+//         snpk = snpInfoVec[k];
+//         // if (!snpk->included) {
+//         if (snpk->index < start || !snpk->included) {
+//             skipk += size;
+//             continue;
+//         }
+//         if (skipk) fseek(in2, skipk, SEEK_CUR);
+//        skipk = 0;
+//        inck ++; 
+//     }
+//     cout << endl;
+//     return denseZPZ;
+// }
+
 
 void Data::getEigenDataFromFullLDM(const string &filename, const float eigenCutoff){
     
@@ -417,128 +552,47 @@ void Data::getEigenDataFromFullLDM(const string &filename, const float eigenCuto
     
 }
 
-void Data::mapSnpsToBlocks(int ldBlockRegionWind){
-    int i,j;
-    vector<locus_bp> snpVec;
-    SnpInfo *snp;
-
-    map<int, string>  chrEndSnp;
-    for (i = 1; i < numIncdSnps; i++) {
-        snp = incdSnpInfoVec[i];
-        if(incdSnpInfoVec[i]->chrom != incdSnpInfoVec[i-1]->chrom){
-            chrEndSnp.insert(pair<int, string>(incdSnpInfoVec[i - 1]->chrom,incdSnpInfoVec[i - 1]->rsID ));
+void Data::mapSnpsToBlocks(int window) {
+    std::map<int,std::vector<SnpInfo*>> chromosomes;
+    for(auto snp:incdSnpInfoVec) {chromosomes[snp->chrom].push_back(snp);snp->isInBlock=false;}
+    for(auto &chr:chromosomes) std::stable_sort(chr.second.begin(),chr.second.end(),
+        [](SnpInfo* a,SnpInfo* b){return a->physPos<b->physPos;});
+    for(auto block:ldBlockInfoVec) {
+        block->snpNameVec.clear(); block->snpInfoVec.clear(); block->kept=false;
+        const auto &snps=chromosomes[block->chrom];
+        const int64_t start=int64_t(block->startPos)-window, end=int64_t(block->endPos)+window;
+        auto it=std::lower_bound(snps.begin(),snps.end(),start,[](SnpInfo* s,int64_t bp){return s->physPos<bp;});
+        // ref4cM blocks are half-open [start,end), so a boundary SNP has one owner.
+        for(;it!=snps.end() && (*it)->physPos<end;++it) {
+            auto snp=*it;
+            if(snp->isInBlock) throw std::runtime_error("Overlapping LD intervals assign SNP twice: "+snp->rsID);
+            block->snpNameVec.push_back(snp->rsID); block->snpInfoVec.push_back(snp);
+            snp->isInBlock=true; snp->block=block->ID;
+        }
+        block->numSnpInBlock=block->snpInfoVec.size();
+        if(block->numSnpInBlock) {
+            block->kept=true;block->startSnpIdx=block->snpInfoVec.front()->index;
+            block->endSnpIdx=block->snpInfoVec.back()->index;
         }
     }
-    chrEndSnp.insert(pair<int, string>(incdSnpInfoVec[numIncdSnps - 1]->chrom,incdSnpInfoVec[numIncdSnps - 1]->rsID ));
-    /////////////////////////////////////////
-    // Step 2. Map snps to blocks
-    /////////////////////////////////////////
-    vector<string> block2snp_1(numLDBlocks), block2snp_2(numLDBlocks);
-    map<string,int> keptLdBlock2AllLdBlcokMap;
-    vector<locus_bp>::iterator iter;
-    map<int, string>::iterator chrIter;
-    LDBlockInfo *ldblock;
-    for (i = 0; i < numIncdSnps ; i++) {
-        snp = incdSnpInfoVec[i];
-        snpVec.push_back(locus_bp(snp->rsID, snp->chrom, snp->physPos ));
-    }
-
-#pragma omp parallel for private(iter, chrIter)
-    for (i = 0; i < numLDBlocks; i++) {
-        // find lowest snp_name in the block
-        ldblock = ldBlockInfoVec[i];
-
-        iter = find_if(snpVec.begin(), snpVec.end(), locus_bp( ldblock->ID ,ldblock->chrom, ldblock->startPos - ldBlockRegionWind));
-        if (iter != snpVec.end()) block2snp_1[i] = iter->locusName;
-        else block2snp_1[i] = "NA";
-    }
-#pragma omp parallel for private(iter, chrIter)
-    for (i = 0; i < numLDBlocks; i++) { 
-        ldblock = ldBlockInfoVec[i];               
-        if (block2snp_1[i] == "NA") {
-            block2snp_2[i] = "NA";
-            continue;
-        }
-        iter = find_if(snpVec.begin(), snpVec.end(), locus_bp(ldblock->ID, ldblock->chrom, ldblock->endPos + ldBlockRegionWind));
-        if (iter != snpVec.end()){
-            if (iter->bp ==  ldblock->endPos + ldBlockRegionWind){
-                block2snp_2[i] = iter->locusName;
-            }else {
-                if(iter!=snpVec.begin()){
-                    iter--;
-                    block2snp_2[i] = iter->locusName;
-                }
-                else block2snp_2[i] = "NA";
-            }
-        }
-        else {
-            chrIter = chrEndSnp.find(ldblock->chrom);
-            if (chrIter == chrEndSnp.end()) block2snp_2[i] = "NA";
-            else block2snp_2[i] = chrIter->second;
-        }
-    }
-    int mapped = 0;
-    for (i = 0; i < numLDBlocks; i++) {
-        ldblock = ldBlockInfoVec[i];
-        if (block2snp_1[i] != "NA" && block2snp_2[i] != "NA") 
-        {
-            mapped++;
-            // ldblock->kept = true;
-            keptLdBlock2AllLdBlcokMap.insert(pair<string, int>(ldblock->ID, i));
-        } else {
-            ldblock->kept = false;
-        }
-    }
-    if (mapped < 1) LOGGER.e(0, "No SNP can be mapped to the provided LD block list. Please check the input data regarding chromosome and bp.");
-    else LOGGER << mapped << " GWAS LD block(s) are retained." << endl;
-
-    keptLdBlockInfoVec = makeKeptLDBlockInfoVec(ldBlockInfoVec);
-    numKeptLDBlocks = (unsigned) keptLdBlockInfoVec.size();
-
-    string lastSNPIDInPreLDblocks;
-    map<string, int>::iterator iter1, iter2;
-    map<string, int> snpNameMap;
-    
-    for (i = 0; i < numIncdSnps; i++) {
-        SnpInfo *snp = incdSnpInfoVec[i];
-        snpNameMap.insert(pair<string,int>(snp->rsID, i));
-        
-    }
-    for (i = 0; i < numKeptLDBlocks; i++) {
-        ldblock = keptLdBlockInfoVec[i]; 
-        ldblock->snpNameVec.clear();
-        ldblock->snpInfoVec.clear();
-        // LOGGER << "ldblock id: " << ldblock->ID << endl;
-        iter1 = snpNameMap.find(block2snp_1[keptLdBlock2AllLdBlcokMap.at(ldblock->ID ) ]);
-        iter2 = snpNameMap.find(block2snp_2[keptLdBlock2AllLdBlcokMap.at(ldblock->ID ) ]);
-        bool skip = false;
-        if (iter1 == snpNameMap.end() || iter2 == snpNameMap.end() || iter1->second >= iter2->second) ldblock->kept = false;
-        if(!ldblock->kept) continue;
-        vector<int> snp_indx;
-        for (j = iter1->second; j <= iter2->second; j++) {
-            snp = incdSnpInfoVec[j];
-            if(snp->rsID == lastSNPIDInPreLDblocks){continue;} // if snp is matched to two ldblock
-            ldblock->snpNameVec.push_back(snp->rsID);
-            ldblock->snpInfoVec.push_back(snp);
-            snp->isInBlock = true;
-            snp->block = ldblock->ID;
-            if (j == iter2->second) { lastSNPIDInPreLDblocks = snp->rsID;}
-        }
-
-        ldblock->numSnpInBlock = ldblock->snpInfoVec.size();
-        ldblock->startSnpIdx = ldblock->snpInfoVec[0]->index;
-        ldblock->endSnpIdx = ldblock->snpInfoVec[ldblock->numSnpInBlock-1]->index;
-    }
- 
+    keptLdBlockInfoVec=makeKeptLDBlockInfoVec(ldBlockInfoVec);
+    numKeptLDBlocks=keptLdBlockInfoVec.size();
+    if(!numKeptLDBlocks) throw std::runtime_error("No SNP maps to the provided LD blocks");
+    LOGGER << numKeptLDBlocks << " GWAS LD blocks retained." << endl;
 }
 
-void Data::makeBlockLDmatrix(const string &bedFile, const string &LDmatType, const unsigned block, const string &dirname, const bool writeLdmTxt, int ldBlockRegionWind){
-    LOGGER << "Making block LD matricies ..." << endl;
+void Data::makeBlockLDmatrix(const string &bedFile, const string &LDmatType, const unsigned block, const string &dirname, const bool writeLdmTxt, int ldBlockRegionWind,const bool isCovBool){
+    string ldNameType = "LD",ldSuffixType = "ldm";
+    if(isCovBool) {
+        ldNameType = "genotype covariance";
+        ldSuffixType = "covm";
+    }
+    LOGGER << "Making block "<< ldNameType << " matricies ..." << endl;
     
     struct stat sb;
     if (stat(dirname.c_str(), &sb) != 0 || !S_ISDIR(sb.st_mode)) {
         // Folder doesn't exist, create it
-        string create_cmd = "mkdir " + dirname;
+        string create_cmd = "mkdir -p " + dirname;
         system(create_cmd.c_str());
         LOGGER << "Created folder [" << dirname << "] to store LD matrices." << endl;
     }
@@ -547,29 +601,44 @@ void Data::makeBlockLDmatrix(const string &bedFile, const string &LDmatType, con
     
     keptLdBlockInfoVec = makeKeptLDBlockInfoVec(ldBlockInfoVec);
     numKeptLDBlocks = (unsigned) keptLdBlockInfoVec.size();
-    
+
 #pragma omp parallel for schedule(dynamic)
     for (unsigned i = 0; i < numKeptLDBlocks; i++) {
         LDBlockInfo *ldblock = keptLdBlockInfoVec[i];
+        if (block && std::stoul(ldblock->ID) != block) {
+            continue;
+        }
 
-        string outBinfile = dirname + "/block" + ldblock->ID + ".ldm.bin";
+
+        string outNameType;
+        // if(isCovBool) {
+            //  outNameType = "blockchr" + to_string(ldblock->chrom) + "_" + to_string(ldblock->startPos) + "_" + to_string(ldblock->endPos);
+        // } else {
+        outNameType = "block" + ldblock->ID;
+        // }
+
+        string outBinfile = dirname + "/" + outNameType + "." + ldSuffixType + ".bin";
+        string outSnpfile = dirname + "/" + outNameType + ".snp.info";
+        string outldmfile = dirname + "/" + outNameType + "." + ldSuffixType + ".info";
+
         FILE *outbin = fopen(outBinfile.c_str(), "wb");
+        if (!outbin) {
+            LOGGER.e(0, "Cannot open file [" + outBinfile + "] to write.");
+        }
         ofstream outtxt;
         string outTxtfile;
         if (writeLdmTxt) {
-            outTxtfile = dirname + "/block" + ldblock->ID + ".ldm.txt";
+            outTxtfile = dirname + "/" + outNameType + "." + ldSuffixType + ".txt";
             outtxt.open(outTxtfile.c_str());
         }
-        string outSnpfile = dirname + "/block" + ldblock->ID + ".snp.info";
-        string outldmfile = dirname + "/block" + ldblock->ID + ".ldm.info";
 
         if(!i) LOGGER << "Reading PLINK BED file from [" + bedFile + "] in SNP-major format ..." << endl;
             
-        MatrixXf rval = generateLDmatrixPerBlock(bedFile, ldblock->snpNameVec).cast<float>();
+        MatrixXf rval = generateLDmatrixPerBlock(bedFile, ldblock->snpNameVec,isCovBool).cast<float>();
         
         unsigned numSnpInBlock = ldblock->numSnpInBlock;
         uint64_t nElements = (uint64_t) numSnpInBlock * (uint64_t) numSnpInBlock;
-        fwrite(rval.data(), sizeof(double), nElements, outbin);
+        fwrite(rval.data(), sizeof(float), nElements, outbin);
         
         if (writeLdmTxt) {
             for (unsigned ii=0; ii<numSnpInBlock; ++ii){
@@ -585,27 +654,27 @@ void Data::makeBlockLDmatrix(const string &bedFile, const string &LDmatType, con
         outputBlockLDmatrixInfo(*ldblock, outSnpfile, outldmfile);
         
         if(!(i%1)) LOGGER << " computed block " << ldblock->ID << "\r" << flush;
-
         if (block) {
-            LOGGER << "Written the LD matrix into file [" << outBinfile << "]." << endl;
-            if (writeLdmTxt) LOGGER << "Written the LD matrix into file [" << outTxtfile << "]." << endl;
-            LOGGER << "Written the LD matrix SNP info into file [" << outSnpfile << "]." << endl;
-            LOGGER << "Written the LD matrix ldm info into file [" << outldmfile << "]." << endl;
+            LOGGER << "Written the " << ldNameType << " matrix into file [" << outBinfile << "]." << endl;
+            if (writeLdmTxt) LOGGER << "Written the " << ldNameType << " matrix into file [" << outTxtfile << "]." << endl;
+            LOGGER << "Written the " << ldNameType << " matrix SNP info into file [" << outSnpfile << "]." << endl;
+            LOGGER << "Written the " << ldNameType << " matrix ldm info into file [" << outldmfile << "]." << endl;
         }
     }
     
     if (!block) {
-        LOGGER << "Written the LD matrix into folder [" << dirname << "/block*.ldm.bin]." << endl;
-        if (writeLdmTxt) LOGGER << "Written the LD matrix into text file [" << dirname << "/block*.ldm.txt]." << endl;
+        LOGGER << "Written the " << ldNameType << " matrix into folder [" << dirname << "/block*." << ldSuffixType << ".bin]." << endl;
+        if (writeLdmTxt) LOGGER << "Written the " << ldNameType << " matrix into text file [" << dirname << "/block*." << ldSuffixType << ".txt]." << endl;
         
-        if (chromInfoVec.size() >= 22) {  // genome-wide build of LD matrices
-            mergeLdmInfo(LDmatType, dirname);
-        } else {
-            LOGGER << "Written the LD matrix into folder [" << dirname << "/block*.snp.info]." << endl;
-            LOGGER << "Written the LD matrix into folder [" << dirname << "/block*.ldm.info]." << endl;
-        }
+        // if (chromInfoVec.size() >= 22) {  // genome-wide build of LD matrices
+        //     mergeLdmInfo(LDmatType, dirname);
+        // } else {
+            LOGGER << "Written the " << ldNameType << " matrix into folder [" << dirname << "/block*.snp.info]." << endl;
+            LOGGER << "Written the " << ldNameType << " matrix into folder [" << dirname << "/block*." << ldSuffixType << ".info]." << endl;
+        // }
     }
 }
+
 
 void Data::outputBlockLDmatrixInfo(const LDBlockInfo &block, const string &outSnpfile, const string &outldmfile) const {
     // write snp info
@@ -621,10 +690,10 @@ void Data::outputBlockLDmatrixInfo(const LDBlockInfo &block, const string &outSn
     % "A1Freq"
     % "N"
     % "Block";
-    SnpInfo *snp;
+    SnpInfo *snp = NULL;
     for (unsigned i=0; i < block.numSnpInBlock; ++i) {
         snp = block.snpInfoVec[i];
-        out1 << boost::format("%6s %15s %10s %10s %15s %6s %6s %12f %10s %10s\n")
+        out1 << boost::format("%6s %15s %10s %10s %15s %6s %6s %22.17g %10s %10s\n")
         % snp->chrom
         % snp->rsID
         % snp->index
@@ -658,6 +727,7 @@ void Data::outputBlockLDmatrixInfo(const LDBlockInfo &block, const string &outSn
     % block.numSnpInBlock;
     out2.close();
 }
+
 
 void Data::impG(const unsigned block, double diag_mod){
     VectorXi numImpSnp;
@@ -800,7 +870,7 @@ void Data::impG(const unsigned block, double diag_mod){
 void Data::getEigenDataForLDBlock(const string &bedFile, const string &ldBlockInfoFile, int ldBlockRegionWind, const string &filename, const float eigenCutoff){
     int i,j;
     vector<locus_bp> snpVec;
-    SnpInfo *snp;
+    SnpInfo *snp = NULL;
 
     map<int, string>  chrEndSnp;
     for (i = 1; i < numIncdSnps; i++) {
@@ -969,7 +1039,7 @@ void Data::readBlockLdmBinaryAndDoEigenDecomposition(const string &dirname, cons
     
 #pragma omp parallel for schedule(dynamic)
     for(int i = 0; i < numLDBlocks; i++){
-        if (block && i != block - 1) continue;
+        if (block && ldBlockInfoVec[i]->ID != std::to_string(block)) continue;
         
         LDBlockInfo *blockInfo = keptLdBlockInfoVec[i];
 
@@ -979,6 +1049,9 @@ void Data::readBlockLdmBinaryAndDoEigenDecomposition(const string &dirname, cons
 
         string outBinfile = dirname + "/block" + blockInfo->ID + ".eigen.bin";
         FILE *outbin = fopen(outBinfile.c_str(), "wb");
+        if (!outbin) {
+            LOGGER.e(0, "Cannot open file [" + outBinfile + "] to write.");
+        }
 
         string outTxtfile;
         ofstream outtxt;
@@ -993,13 +1066,14 @@ void Data::readBlockLdmBinaryAndDoEigenDecomposition(const string &dirname, cons
         uint64_t nElements = (uint64_t)blockSize * (uint64_t)blockSize;
                 
         if(fread(ldm.data(), sizeof(float), nElements, fp) != nElements){
-            cout << "fread(U.data(), sizeof(float), nElements, fp): " << fread(ldm.data(), sizeof(float), nElements, fp) << endl;
+            // cout << "fread(U.data(), sizeof(float), nElements, fp): " << fread(ldm.data(), sizeof(float), nElements, fp) << endl;
             cout << "nEle: " << nElements << " ldm.size: " << ldm.size() <<  " ldm.col: " << ldm.cols() << " row: " << ldm.rows() << endl;
             LOGGER.e(0,"In LD block " + blockInfo->ID + ",size error in " + outBinfile);
             // cout << "Read " << svdLDfile << " error (U)" << endl;
             // LOGGER.e(0,"read file error");
         }
         
+        fclose(fp);
         MatrixXf eigenVec;
         VectorXf eigenVal;
         float sumPosEigVal;  // sum of all positive eigenvalues
@@ -1046,7 +1120,7 @@ void Data::readBlockLdmBinaryAndDoEigenDecomposition(const string &dirname, cons
         fclose(outbin);
         if (writeLdmTxt) outtxt.close();
 
-        if(!(i%1)) cout << " computed block " << blockInfo->ID << "\r" << flush;
+        if(!(i%10)) cout << " computed block " << blockInfo->ID << "\r" << flush;
         
         if (block) {
             cout << "Written the eigen data for block LD matrix into file [" << outBinfile << "]." << endl;
@@ -1113,6 +1187,8 @@ void Data::readEigenMatrixBinaryFile(const string &dirname, const double eigenCu
             LOGGER.e(0,"In LD block " + block->ID + ", error about eigen cutoff used in " + infile);
         }
         // 5. eigenvalues
+        if(cur_m<=0 || cur_k<=0 || cur_k>cur_m)throw std::runtime_error("Invalid LD eigen dimensions");
+        MemoryBudget::require(MemoryBudget::bytes(cur_m,cur_k,64),"LD eigen block, transforms and copies");
         VectorXf lambda(cur_k);
         if(fread(lambda.data(), sizeof(float), cur_k, fp) != cur_k){
             LOGGER.e(0,"In LD block " + block->ID + ",size error about eigenvalues in " + infile);
@@ -1121,14 +1197,14 @@ void Data::readEigenMatrixBinaryFile(const string &dirname, const double eigenCu
         MatrixXf U(cur_m, cur_k);
         uint64_t nElements = (uint64_t)cur_m * (uint64_t)cur_k;
         if(fread(U.data(), sizeof(float), nElements, fp) != nElements){
-            LOGGER << "fread(U.data(), sizeof(double), nElements, fp): " << fread(U.data(), sizeof(float), nElements, fp) << endl;
+            // LOGGER << "fread(U.data(), sizeof(double), nElements, fp): " << fread(U.data(), sizeof(float), nElements, fp) << endl;
             LOGGER << "nEle: " << nElements << " U.size: " << U.size() <<  " U.col: " << U.cols() << " row: " << U.rows() << endl;
             LOGGER.e(0,"In LD block " + block->ID + ",size error about eigenvectors in " + infile);
         }
         fclose(fp);
         bool haveValue = false;
         int revIdx = 0;
-        if(oldEigenCutoff < eigenCutoff & i == 0){
+        if(oldEigenCutoff < eigenCutoff && i == 0){
             LOGGER << "Warning: current proportion of variance in LD block is set as " + to_string(eigenCutoff)+ ". But the proportion of variance is set as "<< to_string(oldEigenCutoff) + " in "  + infile + ".\n";
         }
         if (eigenCutoff < oldEigenCutoff) {
@@ -1141,6 +1217,28 @@ void Data::readEigenMatrixBinaryFile(const string &dirname, const double eigenCu
         block->eigenvalues = lambda.cast<double>();
     }
     LOGGER << "GWAS LDM of" << numLDBlocks << " GWAS LD blocks to be include from [" << dirname << "]." << endl;
+}
+
+VectorXd Data::scoreOnLDScale(const VectorXd &score, const vector<string> &ids) const {
+    if (!ldCorrelation || suppliedGenotypeVariance.empty()) return score;
+    if (score.size()!=ids.size()) throw std::runtime_error("LD score/ID dimension mismatch");
+    VectorXd result=score;
+    for (size_t j=0;j<ids.size();++j) {
+        const double variance=suppliedGenotypeVariance.at(ids[j]);
+        if (!(variance>0) || !std::isfinite(variance)) throw std::runtime_error("Invalid LD genotype variance");
+        result[j]/=std::sqrt(variance);
+    }
+    return result;
+}
+
+void Data::designOnGenotypeScale(MatrixXd &design, const vector<string> &ids) const {
+    if (!ldCorrelation || suppliedGenotypeVariance.empty()) return;
+    if (design.cols()!=ids.size()) throw std::runtime_error("LD design/ID dimension mismatch");
+    for (size_t j=0;j<ids.size();++j) {
+        const double variance=suppliedGenotypeVariance.at(ids[j]);
+        if (!(variance>0) || !std::isfinite(variance)) throw std::runtime_error("Invalid LD genotype variance");
+        design.col(j)*=std::sqrt(variance);
+    }
 }
 
 void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const double eigenCutoff, const vector<VectorXd> &GWASeffects, const double nGWAS, const bool noscale, const bool makePseudoSummary){
@@ -1208,6 +1306,8 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const do
             LOGGER.e(0, "In LD block " + block->ID + ", error about eigen cutoff used in " + infile);
         }
         // 5. eigenvalues
+        if(cur_m<=0 || cur_k<=0 || cur_k>cur_m)throw std::runtime_error("Invalid LD eigen dimensions");
+        MemoryBudget::require(MemoryBudget::bytes(cur_m,cur_k,64),"LD eigen block, transforms and copies");
         VectorXf lambda(cur_k);
         if(fread(lambda.data(), sizeof(float), cur_k, fp) != cur_k){
             LOGGER.e(0, "In LD block " + block->ID + ",size error about eigenvalues in " + infile);
@@ -1216,7 +1316,7 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const do
         MatrixXf U(cur_m, cur_k);
         uint64_t nElements = (uint64_t)cur_m * (uint64_t)cur_k;
         if(fread(U.data(), sizeof(float), nElements, fp) != nElements){
-            cout << "fread(U.data(), sizeof(float), nElements, fp): " << fread(U.data(), sizeof(float), nElements, fp) << endl;
+            // cout << "fread(U.data(), sizeof(float), nElements, fp): " << fread(U.data(), sizeof(float), nElements, fp) << endl;
             cout << "nEle: " << nElements << " U.size: " << U.size() <<  " U.col: " << U.cols() << " row: " << U.rows() << endl;
             LOGGER.e(0, "In LD block " + block->ID + ",size error about eigenvectors in " + infile);
         }
@@ -1237,10 +1337,11 @@ void Data::readEigenMatrixBinaryFileAndMakeWandQ(const string &dirname, const do
         
         // make w and Q
         VectorXd sqrtLambda = eigenValLdBlock[i].array().sqrt();
-        wcorrBlocks[i] = (1.0/sqrtLambda.array()).matrix().asDiagonal() * (eigenVecLdBlock[i].transpose() * GWASeffects[i] );
+        wcorrBlocks[i] = (1.0/sqrtLambda.array()).matrix().asDiagonal() * (eigenVecLdBlock[i].transpose() * scoreOnLDScale(GWASeffects[i],block->snpNameVec));
         //MatrixXf tmpQblocks = sqrtLambda.asDiagonal() * eigenVecLdBlock[i].transpose();
         //MatrixDat matrixDat = MatrixDat(block->snpNameVec, tmpQblocks);
         Qblocks[i] = sqrtLambda.asDiagonal() * eigenVecLdBlock[i].transpose();
+        designOnGenotypeScale(Qblocks[i],block->snpNameVec);
         
         if (noscale) {
             VectorXd Dsqrt(block->numSnpInBlock);
@@ -1299,9 +1400,10 @@ void Data::UseLDBlockEigenMakeWAndQblocks(const vector<VectorXd> &GWASeffects, c
         LDBlockInfo *block = keptLdBlockInfoVec[i];
         if(!block->kept) continue;
         sqrtLambda = eigenValLdBlock[i].array().sqrt();
-        wcorrBlocks[k] = (1.0/sqrtLambda.array()).matrix().asDiagonal() * (eigenVecLdBlock[i].transpose() * GWASeffects[i] );
+        wcorrBlocks[k] = (1.0/sqrtLambda.array()).matrix().asDiagonal() * (eigenVecLdBlock[i].transpose() * scoreOnLDScale(GWASeffects[i],block->snpNameVec));
     
         Qblocks[k] = sqrtLambda.asDiagonal() * eigenVecLdBlock[i].transpose();
+        designOnGenotypeScale(Qblocks[k],block->snpNameVec);
         if (noscale) {
             VectorXd Dsqrt(block->numSnpInBlock);
             for (unsigned j=0; j<block->numSnpInBlock; ++j) {
@@ -1336,48 +1438,21 @@ void Data::UseLDBlockEigenMakeWAndQblocks(const vector<VectorXd> &GWASeffects, c
     }
 }
 
-void Data::truncateEigenMatrix(const float sumPosEigVal, const double eigenCutoff, const VectorXd &oriEigenVal, const MatrixXd &oriEigenVec, VectorXd &newEigenVal, MatrixXd &newEigenVec){
-    int revIdx = oriEigenVal.size();
-    VectorXd cumsumNonNeg(revIdx);
-    cumsumNonNeg.setZero();
-    revIdx = revIdx -1;
-    if(oriEigenVal(revIdx) < 0) LOGGER << "Error, all eigenvector are negative" << endl;
-    cumsumNonNeg(revIdx) = oriEigenVal(revIdx);
-    revIdx = revIdx -1;
-    
-    while(oriEigenVal(revIdx) > 1e-10 ){
-        cumsumNonNeg(revIdx) = oriEigenVal(revIdx) + cumsumNonNeg(revIdx + 1);
-        revIdx =revIdx - 1;
-        if(revIdx <= 0) break;
+void Data::truncateEigenMatrix(const float total, const double cutoff, const VectorXd &values, const MatrixXd &vectors, VectorXd &outValues, MatrixXd &outVectors) {
+    if(values.size()==0 || vectors.cols()!=values.size() || !values.allFinite() || !vectors.allFinite() || !(total>0) || !(cutoff>0 && cutoff<=1))
+        throw std::runtime_error("Invalid stored eigen decomposition or cutoff");
+    std::vector<int> order(values.size());std::iota(order.begin(),order.end(),0);
+    std::stable_sort(order.begin(),order.end(),[&](int a,int b){return values[a]>values[b];});
+    std::vector<int> kept;double sum=0;
+    for(int j:order) {
+        if(values[j]<=1e-10) continue;
+        if(!kept.empty() && sum+2*std::numeric_limits<float>::epsilon()*total>=cutoff*total) break;
+        kept.push_back(j);sum+=values[j];
     }
-    // LOGGER << "revIdx: " << revIdx << endl;
-    // LOGGER << "size: " << oriEigenVal.size()  << " eigenVal: " << oriEigenVal.head(10) << endl;
-    // LOGGER << "cumsumNoNeg: " << cumsumNonNeg << endl;
-    cumsumNonNeg = cumsumNonNeg/sumPosEigVal;  // calcualte the cumulative proportion of variance explained
-    bool haveValue = false;
-    // LOGGER << "cumsumNonNeg: " << cumsumNonNeg << endl;
-    // LOGGER << "revIdx : " << revIdx << endl;
-    // LOGGER << "revIdx: "  << revIdx  << endl;
-    for (revIdx = revIdx + 1; revIdx < oriEigenVal.size(); revIdx ++ ){
-        // LOGGER << "revIdx: " << revIdx << " cumsumNonNeg: " << cumsumNonNeg(revIdx) << endl;
-        if(eigenCutoff >= cumsumNonNeg(revIdx) ){
-            revIdx = revIdx -1;
-            haveValue = true;
-            break;
-        }
-    }
-    // LOGGER << "revIdx : " << revIdx << endl;
-    if(!haveValue) revIdx = oriEigenVal.size() - 1;
-    // LOGGER << "cumsumNonNeg: " << cumsumNonNeg.size() << endl;
-    // LOGGER << "cumsumNoNeg: " << cumsumNonNeg << endl;
-    // LOGGER << "revIdx: "  << revIdx  << endl;
-
-    newEigenVec = oriEigenVec.rightCols(oriEigenVal.size() - revIdx);
-    newEigenVal = oriEigenVal.tail(oriEigenVal.size() - revIdx);
-    // LOGGER << "eigenValAdjusted size: " << eigenValAdjusted.size() << " eigenValue eventually: " << eigenValAdjusted << endl;
-    //eigenvalueNum = eigenVal.size() - revIdx;
-    // LOGGER << endl;
-
+    if(kept.empty()) throw std::runtime_error("No positive LD eigenvalues");
+    // Preserve the file's ordering after choosing the largest eigenvalues.
+    std::sort(kept.begin(),kept.end());outValues.resize(kept.size());outVectors.resize(vectors.rows(),kept.size());
+    for(size_t j=0;j<kept.size();++j){outValues[j]=values[kept[j]];outVectors.col(j)=vectors.col(kept[j]);}
 }
 
 void Data::readEigenMatrix(const string &dirname, const double eigenCutoff,const bool qcBool){
@@ -1441,8 +1516,16 @@ void Data::buildMMEigen(const string &dirname, const bool sampleOverlap, const d
         UseLDBlockEigenMakeWAndQblocks(gwasEffectInBlock, numKeptInds, noscale);
      }
 
+    if (matchedGWAS) {
+        for (unsigned j=0; j<numIncdSnps; ++j)
+            if (incdSnpInfoVec[j]->gwas_n != numKeptInds)
+                throw string("Same-sample SVD GWAS requires common per-SNP sample counts.");
+        nGWASblock.setConstant(numKeptLDBlocks, numKeptInds-1.0);
+        ypy = (numKeptInds-1.0)*varPhenotypic;
+    }
+
     QblocksDat.clear();
-    SnpInfo *snp;
+    SnpInfo *snp = NULL;
     for (unsigned i=0; i<numKeptLDBlocks; ++i) {
         LDBlockInfo* ldblock = keptLdBlockInfoVec[i];
         MatrixDat matrixDat = MatrixDat(ldblock->snpNameVec, Qblocks[i]);
@@ -1474,8 +1557,8 @@ void Data::buildMMEigen(const string &dirname, const bool sampleOverlap, const d
 void Data::includeMatchedBlocks(const bool haveEqtlInfo){
     // this step is to construct gwasSnp2geneVec
 //    LOGGER << "Matching blocks..." << endl;
-    SnpInfo * snp;
-    LDBlockInfo * ldblock;
+    SnpInfo * snp = NULL;
+    LDBlockInfo * ldblock = NULL;
     
     for (unsigned i=0; i<numLDBlocks; ++i){
         ldblock = ldBlockInfoVec[i];
@@ -1644,7 +1727,7 @@ void Data::mergeLdmInfo(const string &outLDmatType, const string &dirname) {
     dirent* dp;
     while ((dp = readdir(dirp)) != NULL) {
         string file_name = dp->d_name;
-        if (file_name.find(search_str) != string::npos) {
+        if (std::regex_match(file_name, std::regex("block[0-9]+\\.ldm\\.info"))) {
             file_list.push_back(file_name);
         }
     }
@@ -1716,14 +1799,14 @@ void Data::mergeLdmInfo(const string &outLDmatType, const string &dirname) {
         string id, allele1, allele2;
         int chr, physPos,ld_n;
         float genPos;
-        float allele1Freq;
+        double allele1Freq;
         int idx = 0;
         int index;
         string blockID;
         map<string, int> snpID2index;
         getline(in1, header);
         while (in1 >> chr >> id >> index >> genPos >> physPos >> allele1 >> allele2 >> allele1Freq >> ld_n >> blockID) {
-            out1 << boost::format("%6s %15s %10s %10s %15s %6s %6s %12f %10s %10s\n")
+            out1 << boost::format("%6s %15s %10s %10s %15s %6s %6s %22.17g %10s %10s\n")
             % chr
             % id
             % snpIdx
@@ -1764,8 +1847,8 @@ void Data::mergeLdmInfo(const string &outLDmatType, const string &dirname) {
         
         ++it;
         
-        remove(snpInfoFile.c_str());
-        remove(ldmInfoFile.c_str());
+        // Keep per-block metadata: merging is repeatable and non-destructive.
+
     }
     
     out1.close();
@@ -1775,6 +1858,934 @@ void Data::mergeLdmInfo(const string &outLDmatType, const string &dirname) {
     cout << "Written " << ldmIdx << " LDMs info into file [" + outldmInfoFile + "]." << endl;
     
 }
+
+ int Data::parseChrNumber(const std::string& s) {
+    if (s == "X" || s == "x") return 23;
+    if (s == "Y" || s == "y") return 24;
+    if (s == "M" || s == "m" || s == "MT" || s == "mt") return 25;
+    return std::stoi(s);
+}
+
+#include <dirent.h>
+#include <sys/stat.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <map>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include <Eigen/Dense>
+#include "hdf5.h"
+
+// ============================================================
+// Parse block number from filename like:
+//   block9.ldm.bin
+// Return ID = "9"
+// ============================================================
+std::optional<LDBlockInfo>
+Data::makeLDBlockFromFilename(const std::string& fname,
+                              int index,
+                              const std::string& marker) {
+    // Require prefix, e.g. "block".
+    if (fname.rfind(marker, 0) != 0) {
+        return std::nullopt;
+    }
+
+    const std::string suffix = ".ldm.bin";
+
+    // Require content between marker and suffix.
+    if (fname.size() <= marker.size() + suffix.size()) {
+        return std::nullopt;
+    }
+
+    // Require the expected suffix.
+    if (fname.compare(fname.size() - suffix.size(),
+                      suffix.size(),
+                      suffix) != 0) {
+        return std::nullopt;
+    }
+    // Extract the block ID between marker and ".ldm.bin".
+    // Examples:
+    //   block9.ldm.bin
+    //       -> ID = "9"
+    //   blockENSG00000283683.ldm.bin
+    //       -> ID = "ENSG00000283683"
+    //   blockENSG00000284922_ENSG00000149357.ldm.bin
+    //       -> ID = "ENSG00000284922_ENSG00000149357"
+    const std::string token = fname.substr(
+        marker.size(),
+        fname.size() - marker.size() - suffix.size()
+    );
+
+    if (token.empty()) {
+        return std::nullopt;
+    }
+
+    // Store the ID as a string. It may be either a numeric block ID
+    // or a single/merged gene ID.
+    LDBlockInfo block(index, token, -1);
+    block.startPos = -1;
+    block.endPos = -1;
+
+    return block;
+}
+// ============================================================
+// Read metadata only from blockX.snp.info
+// Fill:
+//   chrom
+//   startPos
+//   endPos
+//
+// Note:
+// Do NOT populate global snpInfoVec here.
+// This function is only for block-level metadata.
+// ============================================================
+bool Data::loadBlockMetaFromSnpInfo(LDBlockInfo* ldblock,
+                                    const std::string& snpInfoFile) {
+    if (ldblock == nullptr) return false;
+
+    std::ifstream in(snpInfoFile.c_str());
+    if (!in) {
+        LOGGER.e(0, "Error: cannot open SNP info file [" + snpInfoFile + "]");
+        return false;
+    }
+
+    std::string header;
+    std::getline(in, header);
+
+    // block*.snp.info columns:
+    // Chrom ID Index GenPos PhysPos A1 A2 A1Freq N Block
+    int chr = -1;
+    int physPos = -1;
+    int index = 0;
+    int ld_n = 0;
+    float genPos = 0.0f;
+    float af = 0.0f;
+    std::string id, allele1, allele2, blockID;
+
+    bool firstSnp = true;
+    while (in >> chr >> id >> index >> genPos >> physPos
+              >> allele1 >> allele2 >> af >> ld_n >> blockID) {
+        if (firstSnp) {
+            ldblock->chrom = chr;
+            ldblock->startPos = physPos;
+            firstSnp = false;
+        }
+        ldblock->endPos = physPos;
+    }
+    in.close();
+
+    if (firstSnp) {
+        LOGGER << "Warning: no SNPs found in [" << snpInfoFile << "]." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ============================================================
+// Read full SNP list from blockX.snp.info
+// Fill:
+//   ldblock->snpNameVec
+//   ldblock->block2GwasSnpVec
+//
+// Also append into global:
+//   snpInfoVec
+//   snpInfoMap
+//
+// Note:
+// The SNP order in blockX.snp.info is assumed to follow physical position.
+// This is the order kept in HDF5 snplist.
+// ============================================================
+bool Data::loadBlockSnpsFromSnpInfo(LDBlockInfo* ldblock,
+                                    const std::string& snpInfoFile) {
+    if (ldblock == nullptr) return false;
+
+    std::ifstream in(snpInfoFile.c_str());
+    if (!in) {
+        LOGGER.e(0, "Error: cannot open SNP info file [" + snpInfoFile + "]");
+        return false;
+    }
+
+    ldblock->snpNameVec.clear();
+    ldblock->block2GwasSnpVec.clear();
+
+    std::string header;
+    std::getline(in, header);
+
+    int chr = -1;
+    int physPos = -1;
+    int snpIndexInFile = 0;
+    int ld_n = 0;
+    float genPos = 0.0f;
+    float af = 0.0f;
+    std::string id, allele1, allele2, blockID;
+
+    bool firstSnp = true;
+    int localIdx = 0;
+
+    while (in >> chr >> id >> snpIndexInFile >> genPos >> physPos
+              >> allele1 >> allele2 >> af >> ld_n >> blockID) {
+        SnpInfo* snp = new SnpInfo(localIdx++, id, allele1, allele2, chr, genPos, physPos);
+        snp->af = af;
+        snp->block = blockID;
+
+        snpInfoVec.push_back(snp);
+        ldblock->snpNameVec.push_back(id);
+        ldblock->block2GwasSnpVec.push_back(physPos);
+        chromosomes.insert(snp->chrom);
+
+        if (!snpInfoMap.insert({id, snp}).second) {
+            LOGGER.e(0, "Duplicate SNP ID: \"" + id + "\".");
+        }
+
+        if (firstSnp) {
+            ldblock->chrom = chr;
+            ldblock->startPos = physPos;
+            firstSnp = false;
+        }
+        ldblock->endPos = physPos;
+    }
+    in.close();
+
+    if (ldblock->snpNameVec.empty()) {
+        LOGGER << "Warning: empty SNP list in [" << snpInfoFile << "]." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+// ============================================================
+// Read LD matrix from blockX.ldm.bin
+// ============================================================
+bool Data::loadBlockLdmBinary(const std::string& ldmBinFile,
+                              int32_t blockSize,
+                              Eigen::MatrixXf& ldm) {
+    FILE* fp = fopen(ldmBinFile.c_str(), "rb");
+    if (!fp) {
+        LOGGER.e(0, "Error: cannot open [" + ldmBinFile + "]");
+        return false;
+    }
+
+    ldm.resize(blockSize, blockSize);
+    const uint64_t nElem = static_cast<uint64_t>(blockSize) * static_cast<uint64_t>(blockSize);
+
+    if (fread(ldm.data(), sizeof(float), nElem, fp) != nElem) {
+        fclose(fp);
+        LOGGER.e(0, "Size error in " + ldmBinFile);
+        return false;
+    }
+
+    fclose(fp);
+    return true;
+}
+
+// ============================================================
+// Write one block into HDF5 group
+//   /blk_k/snplist
+//   /blk_k/ldblk
+// ============================================================
+bool Data::writeOneBlockToHdf5(hid_t file_id,
+                               const std::string& groupName,
+                               const std::vector<std::string>& snpNames,
+                               const Eigen::MatrixXf& ldm) {
+    hid_t group = H5Gcreate(file_id, groupName.c_str(),
+                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    if (group < 0) {
+        LOGGER.e(0, "Error: cannot create group [" + groupName + "]");
+        return false;
+    }
+
+    const int32_t blockSize = static_cast<int32_t>(snpNames.size());
+
+    // snplist
+    hsize_t dims1[1] = { static_cast<hsize_t>(blockSize) };
+    hid_t space1 = H5Screate_simple(1, dims1, NULL);
+
+    hid_t strType = H5Tcopy(H5T_C_S1);
+    H5Tset_size(strType, H5T_VARIABLE);
+
+    std::vector<const char*> cstrs;
+    cstrs.reserve(blockSize);
+    for (const auto& s : snpNames) cstrs.push_back(s.c_str());
+
+    hid_t dset1 = H5Dcreate(group, "snplist", strType, space1,
+                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(dset1, strType, H5S_ALL, H5S_ALL, H5P_DEFAULT, cstrs.data());
+
+    H5Dclose(dset1);
+    H5Sclose(space1);
+    H5Tclose(strType);
+
+    // ldblk
+    hsize_t dims2[2] = {
+        static_cast<hsize_t>(blockSize),
+        static_cast<hsize_t>(blockSize)
+    };
+    hid_t space2 = H5Screate_simple(2, dims2, NULL);
+
+    hid_t dset2 = H5Dcreate(group, "ldblk", H5T_NATIVE_FLOAT, space2,
+                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    H5Dwrite(dset2, H5T_NATIVE_FLOAT, H5S_ALL, H5S_ALL,
+             H5P_DEFAULT, ldm.data());
+
+    H5Dclose(dset2);
+    H5Sclose(space2);
+
+    H5Gclose(group);
+    return true;
+}
+
+// ============================================================
+// Main function
+//
+// dirname : input folder containing
+//           block*.ldm.bin / block*.snp.info
+//
+// outname : output prefix for per-chromosome HDF5 files,
+//           e.g. "/tmp/ldblk_reference"
+//
+// Output:
+//   outname_chr1.ld.hdf5
+//   outname_chr2.ld.hdf5
+//   ...
+//   <outname parent directory>/ld.snpinfo
+//
+// Block IDs may be numeric or string-based gene IDs, for example:
+//   block9.ldm.bin
+//   blockENSG00000283683.ldm.bin
+//   blockENSG00000284922_ENSG00000149357.ldm.bin
+// ============================================================
+
+void Data::mergeLdmInfoIntoPrsCSHdf5(
+    const string &outLDmatType,
+    const string &dirname,
+    const string &outname
+) {
+    const std::string dirPath = dirname;
+    const std::string blockPrefix = "block";
+    const std::string ldmSuffix = ".ldm.bin";
+
+    boost::filesystem::path outPrefix(outname);
+    const std::string outPath = (outPrefix.parent_path() / "").string();
+
+    DIR* dirp = opendir(dirPath.c_str());
+
+    if (dirp == nullptr) {
+        LOGGER.e(0, " opening directory [" + dirname + "]");
+    }
+
+    // --------------------------------------------------------
+    // 1. Find all block*.ldm.bin files
+    // --------------------------------------------------------
+    std::vector<std::string> fileList;
+    dirent* dp = nullptr;
+
+    while ((dp = readdir(dirp)) != nullptr) {
+        const std::string fileName = dp->d_name;
+
+        const bool hasPrefix =
+            fileName.rfind(blockPrefix, 0) == 0;
+
+        const bool hasSuffix =
+            fileName.size() > blockPrefix.size() + ldmSuffix.size() &&
+            fileName.compare(
+                fileName.size() - ldmSuffix.size(),
+                ldmSuffix.size(),
+                ldmSuffix
+            ) == 0;
+
+        if (hasPrefix && hasSuffix) {
+            fileList.push_back(fileName);
+        }
+    }
+
+    closedir(dirp);
+
+    // Initial deterministic filename ordering.
+    // Final HDF5 block ordering is determined later by chromosome
+    // and physical position.
+    std::sort(fileList.begin(), fileList.end());
+
+    // --------------------------------------------------------
+    // 2. Build block list from filenames and block*.snp.info
+    // --------------------------------------------------------
+    ldBlockInfoVec.clear();
+    ldBlockInfoMap.clear();
+
+    std::set<int> chromVec;
+    std::multimap<int, LDBlockInfo*> chrToLDBlockMap;
+
+    int idx = 0;
+
+    for (const auto& fileName : fileList) {
+        auto optBlock = Data::makeLDBlockFromFilename(
+            fileName,
+            idx,
+            blockPrefix
+        );
+
+        if (!optBlock) {
+            LOGGER << "Skip invalid LD filename ["
+                   << fileName << "]." << std::endl;
+            continue;
+        }
+
+        LDBlockInfo* ldblock =
+            new LDBlockInfo(std::move(*optBlock));
+
+        const std::string id = ldblock->ID;
+
+        // Prevent duplicate block IDs.
+        if (!ldBlockInfoMap.insert({id, ldblock}).second) {
+            LOGGER << "Skip duplicated block ID ["
+                   << id << "]." << std::endl;
+
+            delete ldblock;
+            continue;
+        }
+
+        const std::string snpInfoFile =
+            dirname + "/" +
+            blockPrefix + ldblock->ID +
+            ".snp.info";
+
+        if (!loadBlockMetaFromSnpInfo(ldblock, snpInfoFile)) {
+            LOGGER << "Skip block [" << id
+                   << "] because metadata cannot be loaded from ["
+                   << snpInfoFile << "]." << std::endl;
+
+            ldBlockInfoMap.erase(id);
+            delete ldblock;
+            continue;
+        }
+
+        ldBlockInfoVec.push_back(ldblock);
+        chromVec.insert(ldblock->chrom);
+        chrToLDBlockMap.insert({
+            ldblock->chrom,
+            ldblock
+        });
+
+        ++idx;
+    }
+
+    numLDBlocks =
+        static_cast<unsigned>(ldBlockInfoVec.size());
+
+    includeMatchedBlocks();
+
+    LOGGER << numLDBlocks
+           << " LD Blocks to be included from folder ["
+           << dirname << "]."
+           << std::endl;
+
+    if (numLDBlocks == 0) {
+        LOGGER.e(
+            0,
+            " there is no valid LD block to merge in folder [" +
+            dirname + "]."
+        );
+    }
+
+    // --------------------------------------------------------
+    // 3. Reset SNP containers for merged SNP output
+    // --------------------------------------------------------
+    snpInfoVec.clear();
+    snpInfoMap.clear();
+
+    // --------------------------------------------------------
+    // 4. Process each chromosome
+    //
+    // Chromosomes are traversed in ascending numeric order
+    // because chromVec is std::set<int>.
+    //
+    // Within each chromosome, blocks are sorted by:
+    //   1. startPos ascending
+    //   2. endPos ascending
+    //   3. string block ID ascending as tie-breaker
+    //
+    // Then valid blocks are written as:
+    //   /blk_1
+    //   /blk_2
+    //   ...
+    // --------------------------------------------------------
+    for (const int chr : chromVec) {
+        std::cout << "Chromosome " << chr << ":\n";
+
+        const std::string hdf5File =
+            outname +
+            "_chr" +
+            std::to_string(chr) +
+            ".ld.hdf5";
+
+        hid_t fileId = H5Fcreate(
+            hdf5File.c_str(),
+            H5F_ACC_TRUNC,
+            H5P_DEFAULT,
+            H5P_DEFAULT
+        );
+
+        if (fileId < 0) {
+            LOGGER.e(
+                0,
+                "Error: cannot create HDF5 file [" +
+                hdf5File + "]"
+            );
+            continue;
+        }
+
+        // Gather all blocks for the current chromosome.
+        std::vector<LDBlockInfo*> chrBlocks;
+
+        const auto range =
+            chrToLDBlockMap.equal_range(chr);
+
+        for (auto it = range.first;
+             it != range.second;
+             ++it) {
+            chrBlocks.push_back(it->second);
+        }
+
+        // Sort blocks by physical position.
+        // Gene IDs are strings and are used only as a final tie-breaker.
+        std::sort(
+            chrBlocks.begin(),
+            chrBlocks.end(),
+            [](const LDBlockInfo* a,
+               const LDBlockInfo* b) {
+                if (a->startPos != b->startPos) {
+                    return a->startPos < b->startPos;
+                }
+
+                if (a->endPos != b->endPos) {
+                    return a->endPos < b->endPos;
+                }
+
+                return a->ID < b->ID;
+            }
+        );
+
+        int blkCount = 0;
+
+        for (LDBlockInfo* ldblock : chrBlocks) {
+            ldblock->snpNameVec.clear();
+            ldblock->block2GwasSnpVec.clear();
+
+            const std::string snpInfoFile =
+                dirname + "/" +
+                blockPrefix + ldblock->ID +
+                ".snp.info";
+
+            if (!loadBlockSnpsFromSnpInfo(
+                    ldblock,
+                    snpInfoFile
+                )) {
+                LOGGER << "Skip block ["
+                       << ldblock->ID
+                       << "] because SNP information cannot be loaded from ["
+                       << snpInfoFile
+                       << "]."
+                       << std::endl;
+                continue;
+            }
+
+            const int32_t blockSize =
+                static_cast<int32_t>(
+                    ldblock->snpNameVec.size()
+                );
+
+            if (blockSize <= 1) {
+                LOGGER << "Skip block ["
+                       << ldblock->ID
+                       << "] because blockSize <= 1."
+                       << std::endl;
+                continue;
+            }
+
+            const std::string ldmBinFile =
+                dirname + "/" +
+                blockPrefix + ldblock->ID +
+                ldmSuffix;
+
+            Eigen::MatrixXf ldm;
+
+            if (!loadBlockLdmBinary(
+                    ldmBinFile,
+                    blockSize,
+                    ldm
+                )) {
+                LOGGER << "Skip block ["
+                       << ldblock->ID
+                       << "] because LD matrix cannot be loaded from ["
+                       << ldmBinFile
+                       << "]."
+                       << std::endl;
+                continue;
+            }
+
+            const std::string groupName =
+                "/blk_" +
+                std::to_string(blkCount + 1);
+
+            if (!writeOneBlockToHdf5(
+                    fileId,
+                    groupName,
+                    ldblock->snpNameVec,
+                    ldm
+                )) {
+                LOGGER << "Skip block ["
+                       << ldblock->ID
+                       << "] because writing HDF5 group ["
+                       << groupName
+                       << "] failed."
+                       << std::endl;
+                continue;
+            }
+
+            // Only increment after successful HDF5 writing.
+            ++blkCount;
+
+            LOGGER << "Wrote block ["
+                   << ldblock->ID
+                   << "] as group ["
+                   << groupName
+                   << "] in chromosome "
+                   << chr
+                   << "."
+                   << std::endl;
+        }
+
+        H5Fclose(fileId);
+
+        LOGGER << "Chromosome "
+               << chr
+               << ": wrote "
+               << blkCount
+               << " blocks to file ["
+               << hdf5File
+               << "]."
+               << std::endl;
+    }
+
+    // --------------------------------------------------------
+    // 5. Write merged SNP information
+    // --------------------------------------------------------
+    numSnps =
+        static_cast<unsigned>(snpInfoVec.size());
+
+    includeMatchedSnp();
+
+    const std::string outSnpInfoFile =
+        outPath + "/ld.snpinfo";
+
+    std::ofstream out(outSnpInfoFile.c_str());
+
+    if (!out.is_open()) {
+        LOGGER.e(
+            0,
+            "Error: cannot create SNP info file [" +
+            outSnpInfoFile + "]"
+        );
+    }
+
+    out << boost::format(
+        "%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
+    )
+        % "CHR"
+        % "SNP"
+        % "BP"
+        % "A1"
+        % "A2"
+        % "A1Freq"
+        % "BLOCK";
+
+    for (unsigned i = 0;
+         i < numIncdSnps;
+         ++i) {
+        SnpInfo* snp = incdSnpInfoVec[i];
+
+        out << boost::format(
+            "%s\t%s\t%s\t%s\t%s\t%.6f\t%s\n"
+        )
+            % snp->chrom
+            % snp->rsID
+            % snp->physPos
+            % snp->a1
+            % snp->a2
+            % snp->af
+            % snp->block;
+    }
+
+    out.close();
+
+    LOGGER << "Wrote total "
+           << numIncdSnps
+           << " SNP records into ["
+           << outSnpInfoFile
+           << "]."
+           << std::endl;
+
+    LOGGER
+        << "\n## Standards for constructing LD blocks ##\n"
+        << "1. SNPs must map to the same chromosome\n"
+        << "2. Duplicate SNP entries are removed\n"
+        << "3. SNPs within each block follow input physical-position order\n"
+        << "4. Chromosomes are processed in ascending numeric order\n"
+        << "5. Blocks within each chromosome are sorted by startPos and endPos\n"
+        << "6. String block IDs are used only as a final ordering tie-breaker\n"
+        << "7. Blocks containing one or zero SNPs are excluded\n";
+}
+
+
+void Data::mergeLdmInfoIntoCovmHdf5(const string &outLDmatType, const string &dirname, const string &outname) {
+    
+    string dir_path = dirname; // Replace with your folder path
+    string search_str;
+    if(outLDmatType == "covm") search_str = "block";
+    DIR* dirp = opendir(dir_path.c_str());
+    
+    if (dirp == NULL) {LOGGER.e(0, " opening directory [" + dirname + "]");}
+    // find out all ldm in the folder
+    vector<string> file_list;
+    
+    dirent* dp;
+    while ((dp = readdir(dirp)) != NULL) {
+        string file_name = dp->d_name;
+        if (std::regex_match(file_name, std::regex("block[0-9]+\\.ldm\\.info"))) {
+            file_list.push_back(file_name);
+        }
+    }
+    
+    closedir(dirp);
+    std::vector<LDBlockInfo> ldBlockInfo;
+    // set<string> blockIdxSet;
+    // blockIdxSet.clear();
+
+    int idx = 0;
+    LDBlockInfo *ldblock = NULL;
+    ldBlockInfoVec.clear();
+    ldBlockInfoMap.clear();
+    for (const auto& fname : file_list) {
+        if (auto optBlock = Data::makeLDBlockFromFilename(fname, idx)) {
+            const std::string& id = optBlock->ID;
+            // if (blockIdxSet.count(id)) continue;
+            ldblock = new LDBlockInfo(std::move(*optBlock)); 
+            if (ldBlockInfoMap.insert(pair<string, LDBlockInfo*>(id, ldblock)).second == false) continue;
+            ldBlockInfoVec.push_back(ldblock);
+            ++idx;
+        }
+    }
+
+    numLDBlocks = ldBlockInfoVec.size();
+    includeMatchedBlocks();
+    LOGGER << numLDBlocks << " Genotype covariance Blocks to be included from folder [" + dirname + "]." << endl;
+
+
+    // std::filesystem::path outSnpInfoFile = std::filesystem::path(outdirname) / "ldm.hdf5.snpinfo";
+
+    if (numLDBlocks == 0) {LOGGER.e(0, " there is no info file to merge in folder [" + dirname + "].");}
+    // std::filesystem::path hdf5File = std::filesystem::path(outdirname) / "ldm.hdf5";
+    string outSnpInfoFile = outname + ".snp.info";
+    
+    // unsigned nldm = blockIdxSet.size();
+    // set<string>::iterator it = blockIdxSet.begin();
+    unsigned snpIdx = 0;
+    unsigned ldmIdx = 0;
+    snpInfoVec.clear();
+    snpInfoMap.clear();
+    SnpInfo *snp = NULL;
+    // loop chroms
+
+    std::string hdf5File = outname + ".covm.hdf5";
+    /************************************************************
+    * LD HDF5 Storage Specification (Column-major Upper-triangular)
+    *
+    * Each LD block is stored as a group `/blk_k` containing:
+    *
+    *   1. "snplist" : string array of SNP IDs, length = n.
+    *   2. "ldblk_utri" : 1D float array, storing the upper-triangular
+    *      (including diagonal) elements of the LD matrix.
+    *      Flattening order is **column-major**:
+    *         - Fix column j = 0..n-1
+    *         - For each column j, store rows i = 0..j
+    *      Example for n=3:
+    *
+    *           [ a11  a12  a13
+    *                  a22  a23
+    *                       a33 ]
+    *
+    *      Stored as: [a11, a12, a22, a13, a23, a33]
+    *
+    *   3. Attribute "nSNPs" : integer scalar attached to "ldblk_utri",
+    *      indicating the number of SNPs (matrix dimension).
+    *
+    * Notes:
+    *   - This saves ~50% memory compared to full n×n storage.
+    *   - When reading in R/Python, reconstruct full symmetric LD:
+    *       mat[i,j] = mat[j,i] = stored[k] (iterate in column-major order).
+    *   - Keep SNP order consistent with "snplist".
+    ************************************************************/
+
+
+    // open new HDF5 file for this chromosome
+    hid_t file_id = H5Fcreate(hdf5File.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    if (file_id < 0) { LOGGER.e(0, "Error: cannot create HDF5 file [" + hdf5File + "]"); }
+
+    // iterate over LD blocks for this chromosome
+    for (unsigned lbs=0; lbs < numLDBlocks; ++lbs) {
+        ldblock = ldBlockInfoVec[lbs];
+        ldblock->snpNameVec.clear();
+        // read SNP info
+        std::string snpInfoFile = dirname + "/block" + ldblock->ID + ".snp.info";
+        std::ifstream in1(snpInfoFile.c_str());
+        if (!in1) { LOGGER.e(0, "Error: cannot open SNP info file [" + snpInfoFile + "]"); continue; }
+        std::string header,id,allele1,allele2,blockID; int chr,physPos,ld_n,index,idx=0; float genPos,af;
+        std::getline(in1, header);
+        while (in1 >> chr >> id >> index >> genPos >> physPos >> allele1 >> allele2 >> af >> ld_n >> blockID) {
+            snp = new SnpInfo(idx++, id, allele1, allele2, chr, genPos, physPos);
+            snp->af=af; snp->block=blockID;
+            snpInfoVec.push_back(snp);
+            snp->windStart = ldblock->startPos;
+            snp->windEnd = ldblock->endPos;
+            snp->block = ldblock->ID;
+            snp->ld_n = ld_n;
+            snp->WindWidth = ldblock->endPos - ldblock->startPos;
+            ldblock->snpNameVec.push_back(id);
+            ldblock->block2GwasSnpVec.push_back(physPos);
+            chromosomes.insert(snp->chrom);
+            if (!snpInfoMap.insert({id, snp}).second) LOGGER.e(0,"Duplicate SNP ID: \""+id+"\".");
+        }
+        in1.close();
+
+        // read LD matrix from binary file
+        std::string ldmBinFile = dirname + "/block" + ldblock->ID + ".covm.bin";
+        FILE* fp=fopen(ldmBinFile.c_str(),"rb");
+        if(!fp){ LOGGER.e(0,"Error: cannot open ["+ldmBinFile+"]"); continue; }
+        int32_t blockSize = ldblock->snpNameVec.size();
+        Eigen::MatrixXf ldm(blockSize,blockSize);
+        uint64_t nElem=(uint64_t)blockSize*blockSize;
+        if(fread(ldm.data(),sizeof(float),nElem,fp)!=nElem) LOGGER.e(0,"Size error in "+ldmBinFile);
+        fclose(fp);
+
+        // create group for this block
+        std::string groupName="/blk_"+std::to_string(ldblock->index+1);
+        hid_t group=H5Gcreate(file_id,groupName.c_str(),H5P_DEFAULT,H5P_DEFAULT,H5P_DEFAULT);
+        if(group<0){ LOGGER.e(0,"Error: cannot create group "+groupName); continue; }
+
+        // write SNP list as variable-length strings
+        hsize_t dims1[1] = { static_cast<hsize_t>(blockSize) };
+        hid_t space1=H5Screate_simple(1,dims1,NULL);
+        hid_t strType=H5Tcopy(H5T_C_S1); H5Tset_size(strType,H5T_VARIABLE);
+        std::vector<const char*> cstrs; cstrs.reserve(blockSize);
+        for(auto& s:ldblock->snpNameVec) cstrs.push_back(s.c_str());
+        hid_t dset1=H5Dcreate(group,"snplist",strType,space1,H5P_DEFAULT,H5P_DEFAULT,H5P_DEFAULT);
+        H5Dwrite(dset1,strType,H5S_ALL,H5S_ALL,H5P_DEFAULT,cstrs.data());
+        H5Dclose(dset1); H5Sclose(space1); H5Tclose(strType);
+
+        std::vector<float> tri_data= Gadget::packUpperTriColMajor(ldm);
+        // write LD as 1D
+        hsize_t dims2[1] = { (hsize_t)tri_data.size() };
+        hid_t space2 = H5Screate_simple(1,dims2,NULL);
+        hid_t dset2 = H5Dcreate(group,"blk_covm_utri",H5T_NATIVE_FLOAT,space2,H5P_DEFAULT,H5P_DEFAULT,H5P_DEFAULT);
+        H5Dwrite(dset2,H5T_NATIVE_FLOAT,H5S_ALL,H5S_ALL,H5P_DEFAULT,tri_data.data());
+
+        // add attribute nSNPs
+        hid_t attr_space=H5Screate(H5S_SCALAR);
+        hid_t attr=H5Acreate(dset2,"nSNPs",H5T_NATIVE_INT,attr_space,H5P_DEFAULT,H5P_DEFAULT);
+        int32_t n=ldm.rows(); H5Awrite(attr,H5T_NATIVE_INT,&n);
+        H5Aclose(attr); 
+
+        // add attribute chr
+        hid_t attr_chr = H5Acreate(dset2,"chr",H5T_NATIVE_INT,attr_space,H5P_DEFAULT,H5P_DEFAULT);
+        H5Awrite(attr_chr,H5T_NATIVE_INT,&ldblock->chrom);
+        H5Aclose(attr_chr);
+        
+        H5Sclose(attr_space);H5Dclose(dset2); H5Sclose(space2);
+
+
+        H5Gclose(group);
+        LOGGER << "Wrote SNP list and LD matrix for block ["+ldblock->ID+"]" << std::endl;
+    }
+    H5Fclose(file_id);
+    LOGGER << "Written to file [" + hdf5File + "] (Column-major Upper-triangular for block matrices)." << std::endl;
+
+
+    // update snp info
+    numSnps = (unsigned) snpInfoVec.size();
+    includeMatchedSnp();
+    ofstream out1(outSnpInfoFile.c_str());
+    // out1 << boost::format("%s\t%s\t%s\t%s\t%s\t%s\t%s\n")
+    //  % "CHR" % "SNP" % "BP" % "A1" % "A2" % "A1Freq" % "BLOCK";
+    // for (unsigned i=0; i < numIncdSnps ; ++i) {
+    //     snp = incdSnpInfoVec[i];
+    //     out1 << boost::format("%s\t%s\t%s\t%s\t%s\t%.6f\t%s\n")
+    //         % snp->chrom
+    //         % snp->rsID
+    //         % snp->physPos
+    //         % snp->a1
+    //         % snp->a2
+    //         % snp->af
+    //         % snp->block;
+    // }
+    // out1.close();
+    out1 << boost::format("%6s %15s %10s %15s %6s %6s %12s %10s %10s %10s %10s %15s %10s %12s %12s\n")
+    % "Chrom"
+    % "ID"
+    % "GenPos"
+    % "PhysPos"
+    % "A1"
+    % "A2"
+    % "A1Freq"
+    % "Index"
+    % "WindStart"
+    % "WindEnd"
+    % "WindSize"
+    % "WindWidth"
+    % "N"
+    % "SamplVar"
+    % "LDsum";
+    for (unsigned i=0; i<numIncdSnps; ++i) {
+        snp = incdSnpInfoVec[i];
+        out1 << boost::format("%6s %15s %10s %15s %6s %6s %12f %10s %10s %10s %10s %15s %10s %12.6f %12.6f\n")
+        % snp->chrom
+        % snp->rsID
+        % snp->genPos
+        % snp->physPos
+        % snp->a1
+        % snp->a2
+        % snp->af
+        % snp->index
+        % snp->windStart
+        % snp->windEnd
+        % ldBlockInfoMap[snp->block]->snpNameVec.size()
+        % snp->WindWidth
+        % snp->ld_n
+        % snp->ldSamplVar
+        % snp->ldSum;
+    }
+    out1.close();
+
+    LOGGER << "Write total " << numIncdSnps << " SNP info into the single file [" + outSnpInfoFile + "]." << endl;
+    LOGGER << "\n##Standards for constructing LD blocks:##\n"
+         << "1. SNPs must map within the same chromosome\n"
+         << "2. Remove duplicate SNP entries\n"
+         << "3. SNP must satisfy start <= pos <= stop\n"
+         << "4. If SNP falls in multiple blocks, keep the later one\n"
+         << "5. Drop blocks with only 1 SNP\n"
+         << "6. Each SNP maps to only one block (unique mapping)\n"
+         << "7. SNPs on boundaries are included, but drop block if only 1 boundary SNP\n"
+         ;
+}
+
 
 
 void Data::mergeBlockGwasSummary(const string &gwasSummaryFile, const string &title) {
@@ -1950,7 +2961,7 @@ void Data::scaleGwasEffects(){
     ZPy.resize(numIncdSnps);
     varySnp.resize(numIncdSnps);
 
-    SnpInfo *snp;
+    SnpInfo *snp = NULL;
     int lineIdx = 0;
     auto startTime = std::chrono::steady_clock::now();
     for (unsigned i=0; i<numIncdSnps; ++i) {
@@ -1987,6 +2998,25 @@ void Data::scaleGwasEffects(){
         b[i] = snp->gwas_b  * (snp->scaleFactor); // scale the marginal effect so that it's in per genotype SD unit
         se[i]= snp->gwas_se * (snp->scaleFactor);
         varySnp[i] = 1.0;
+        if (matchedGWAS) {
+            if (!(suppliedPhenotypicVariance > 0.0) || n[i] <= 2)
+                throw string("Same-sample SVD GWAS requires observed sample variance and n > 2.");
+            const double sd = sqrt(suppliedPhenotypicVariance / (snp->gwas_b*snp->gwas_b + (n[i]-2.0)*snp->gwas_se*snp->gwas_se));
+            scalingGWASFactorVec[i] = snp->scaleFactor = sd;
+            b[i] = snp->gwas_b*sd;
+            se[i] = snp->gwas_se*sd;
+            snp2pq[i] = 1.0;
+            varySnp[i] = suppliedPhenotypicVariance;
+        }
+        if (!suppliedGenotypeScale.empty()) {
+            const double sd=suppliedGenotypeScale.at(snp->rsID);
+            const double vx=suppliedGenotypeVariance.at(snp->rsID);
+            scalingGWASFactorVec[i]=snp->scaleFactor=sd;
+            b[i]=snp->gwas_b*sd*vx; // covariance score for Q'Q, not marginal slope
+            se[i]=snp->gwas_se*sd;
+            snp2pq[i]=vx;
+            varySnp[i]=vx*sd*sd*(snp->gwas_b*snp->gwas_b+(n[i]-2)*snp->gwas_se*snp->gwas_se);
+        }
         /////////////////////////////////////
         lineIdx ++;
     }

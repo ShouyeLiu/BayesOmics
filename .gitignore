@@ -9,8 +9,6 @@ configure/bin/*
 # Build files:
 Debug
 Release
-tests/
-samples/pseudo/data/CauPleIntNull/out/
 
 debug/
 release/
@@ -39,3 +37,5 @@ build/*
 
 # For OSX users:
 .DS_Store
+/codex/
+/samples/pseudo/lbs582-585/output/

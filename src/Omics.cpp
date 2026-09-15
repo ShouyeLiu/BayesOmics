@@ -1,3 +1,4 @@
+#include "MemoryBudget.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // This file is part of BayesOmics, a statistical genetics software package
@@ -255,6 +256,7 @@ void Omics::inputSnpInfo(Data &data, const string &includeSnpFile, const string 
         }
     }
     if (!gwasSummaryFile.empty()) data.buildSparseMME(sampleOverlap, noscale);
+    if (data.matchedGWAS) data.alignMatchedGwasMME();
     if (!windowFile.empty()) data.binSnpByWindowID();
 }
 
@@ -498,8 +500,11 @@ Model* Omics::buildModel(Data &data, const string &bedFile, const string &gwasFi
                 const double overdispersion,const bool estimatePS,const double icrsq, const double spouseCorrelation, 
                 const bool diagnosticMode, 
                 const bool originalModel, const bool perSnpGV, const bool robustMode){
+    uint64_t state=MemoryBudget::bytes(data.numIncdSnps,48);
+    if(bayesType=="CO")state+=MemoryBudget::bytes(data.numIncdSnps,uint64_t(data.numKeptGenes)+1,48)+MemoryBudget::bytes(data.numKeptInds,uint64_t(data.numKeptGenes)*3+8);
+    MemoryBudget::require(state,"Gibbs model state (including gene indicators/predictions)");
     data.initVariances(heritability, propVarRandom);
-    if (bayesType == "CO" || bayesType == "RO"){
+    if (bayesType == "CO"){
         if(haveXqtlDataBool){
         // if (!geneInfoFile.empty() || !eqtlSummaryFile.empty()){
         // if ( !eqtlSummaryFile.empty() || !geneInfoFile.empty()){
@@ -523,15 +528,8 @@ Model* Omics::buildModel(Data &data, const string &bedFile, const string &gwasFi
         return new ApproxBayesR(data, data.lowRankModel, data.varGenotypic, data.varResidual, pis, piPar, gamma,
                                 estimatePi, estimateSigmaSq, noscale, originalModel, overdispersion, estimatePS, 
                                 spouseCorrelation, diagnosticMode, robustMode, algorithm);
-      } else if(bayesType == "RO"){
-        // return new 
-        return new ApproxBayesRO(data,mcmcType,eieoLatent, sampleVareBool,sampleVarEpsBool, data.varGenotypic, 
-                                data.varResidual,data.varRandom,heritability,cisHeritability ,pi,piEffEqtl,
-                                piGenicGwas, piGenicEqtl,piEffNonEqtl,
-                                piEffEqtlVec,piEffNonEqtlVec,piTheta, piAlpha, piBeta, estimatePi, noscale, phi,
-                                overdispersion, estimatePS, icrsq, spouseCorrelation,diagnosticMode, robustMode,pis, 
-                                piPar, gamma, originalModel,algorithm);
-      } else{
+      }  
+      else{
         LOGGER.e(0," Wrong bayes type: " + bayesType + " in the summary-data-based Bayesian analysis.");
       }
     } // end of summary level methods
@@ -553,22 +551,9 @@ Model* Omics::buildModel(Data &data, const string &bedFile, const string &gwasFi
         return new BayesCO(data,mcmcType,eieoLatent, data.varGenotypic, data.varResidual,data.varRandom,heritability,cisHeritability,
                            pi,piEffEqtl,piTheta,piEffNonEqtl, piAlpha, piBeta, estimatePi, noscale, phi, overdispersion, estimatePS, 
                            icrsq, spouseCorrelation, diagnosticMode, robustMode);
-    } else if (bayesType == "RO") {
-        data.readBedFile(noscale, bedFile + ".bed");
-        // if ( !geneInfoFile.empty()){
-        if(haveXqtlDataBool){
-            data.buildBayesOmicsMME(bedFile + ".bed",noscale,true);
-        } else {
-            data.buildBayesOmicsMME(bedFile + ".bed", noscale,false);
-        }
-        return new BayesRO(data,mcmcType,eieoLatent, data.varGenotypic, data.varResidual,data.varRandom,heritability,cisHeritability,
-                           pi,piEffEqtl,piEffNonEqtl,piEffEqtlVec,piEffNonEqtlVec,piTheta,piAlpha, piBeta,estimatePi, noscale, phi, 
-                           overdispersion, estimatePS, icrsq, spouseCorrelation, diagnosticMode, robustMode,pis, piPar, gamma, 
-                           originalModel,algorithm);
     } else {
         LOGGER.e(0," Wrong bayes type: " + bayesType);
     }
-
     return 0;
 }
 
@@ -617,7 +602,7 @@ void Omics::outputResults(const Data &data, const vector<McmcSamples*> &mcmcSamp
             mcmcSamplesPar.push_back(mcmcSamples);
         }
     }
-    if(bayesType == "CO" || bayesType == "RO"){
+    if(bayesType == "CO"){
         outputGeneParameter(data,mcmcSampleVec,mcmcType,filename + ".genePar"); 
     }
     outputPartitionedSnpResults(data,mcmcSampleVec,mcmcType,noscale,filename + ".gene.snpRes.gz");
@@ -625,103 +610,60 @@ void Omics::outputResults(const Data &data, const vector<McmcSamples*> &mcmcSamp
 }
 
 
-void Omics::outputGeneParameter(const Data &data,const vector<McmcSamples*> &mcmcSampleVec,const string &mcmcType,const string &filename) {
-    /// select dataset
-    // vector<McmcSamples*> mcmcSamplesPar;
-    VectorXd cisMean, cisSqrMean;
-    VectorXd genicCisEnrichMean, genicCisEnrichSqrMean;
-    VectorXd gwasCisMean,gwasCisSqrMean;
-    VectorXd genicGwasEnrichMean, genicGwasEnrichSqrMean;
-    VectorXd geneEffMean, geneEffSqrMean;
-
-    for (unsigned i=0; i<mcmcSampleVec.size(); ++i) {
-        McmcSamples *mcmcSamples = mcmcSampleVec[i];
-        if(mcmcSamples->label == "GeneEffects"){
-            // data.outputGeneEffectResults(mcmcSamples->posteriorMean, mcmcSamples->posteriorSqrMean, mcmcSamples->lastSample, pip->posteriorMean,mcmcType,filename + ".geneRes");
-            geneEffMean = mcmcSamples->posteriorMean;
-            geneEffSqrMean = mcmcSamples->posteriorSqrMean;
-        }
-        else if (mcmcSamples->label == "cisHsq"){ 
-            cisMean = mcmcSamples->posteriorMean;
-            cisSqrMean = mcmcSamples->posteriorSqrMean;
-        }
-        else if (mcmcSamples->label == "gwasCisHsq"){
-            gwasCisMean = mcmcSamples->posteriorMean;
-            gwasCisSqrMean = mcmcSamples->posteriorSqrMean;
-        }  
-        else if (mcmcSamples->label == "genicGwasEnrich"){
-            genicGwasEnrichMean = mcmcSamples->posteriorMean;
-            genicGwasEnrichSqrMean = mcmcSamples->posteriorSqrMean;
-        } 
-        else if (mcmcSamples->label == "genicEqtlEnrich"){
-            genicCisEnrichMean = mcmcSamples->posteriorMean;
-            genicCisEnrichSqrMean = mcmcSamples->posteriorSqrMean;
-        } 
-        else {
-            // mcmcSamplesPar.push_back(mcmcSamples);
+void Omics::outputGeneParameter(const Data &data,const vector<McmcSamples*> &samples,const string &mcmcType,const string &filename) {
+    vector<pair<string,McmcSamples*>> columns;
+    for (auto spec : vector<pair<string,string>>{{"GeneEffects","GeneEff"},{"gwasCisHsq","CTHsq"},{"genicGwasEnrich","CTHsqEn"},{"cisHsq","CGHsq"},{"genicEqtlEnrich","CGHsqEn"}}) {
+        for (auto *sample : samples) if (sample->label==spec.first) {
+            if (sample->posteriorMean.size()!=data.numKeptGenes) throw string("Gene output dimension mismatch: ")+spec.first;
+            columns.emplace_back(spec.second,sample); break;
         }
     }
-    
-
-    /// output dataset
-    ofstream out(filename.c_str());
-    out << boost::format("%6s %20s %6s %12s %12s %12s %12s %12s %12s %12s %12s %12s %12s")
-    % "Id"
-    % "GeneID"
-    % "Chrom"
-    % "GeneEff"
-    % "GeneEffSE"
-    % "CTHsq"
-    % "CTHsqSE"
-    % "CTHsqEn"
-    % "CTHsqEnSE"
-    % "CGHsq"
-    % "CGHsqSE"
-    % "CGHsqEn"
-    % "CGHsqEnSE";
-    out << endl;
-    for (unsigned i=0, idx=0; i< data.numKeptGenes; ++i) {
-        GeneInfo *gene = data.keptGeneInfoVec[i];
-        out << boost::format("%6s %20s %6s %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e %12.6e")
-        % (idx+1)
-        % gene->ensemblID
-        % gene->chrom
-        // % gene->midPhyPos
-        % geneEffMean[i]
-        % sqrt(geneEffSqrMean[i] - geneEffMean[i]*geneEffMean[i])
-        % gwasCisMean[i]
-        % sqrt(gwasCisSqrMean[i] - gwasCisMean[i]*gwasCisMean[i])
-        % genicGwasEnrichMean[i]
-        % sqrt(genicGwasEnrichSqrMean[i] - genicGwasEnrichMean[i]*genicGwasEnrichMean[i])
-        % cisMean[i]
-        % sqrt(cisSqrMean[i] - cisMean[i]*cisMean[i])
-        % genicCisEnrichMean[i]
-        % sqrt(genicCisEnrichSqrMean[i] - genicCisEnrichMean[i]*genicCisEnrichMean[i]);
-        out << endl;
-        ++idx;
+    ofstream out(filename);
+    if (!out) throw string("Cannot write gene results: ")+filename;
+    out.precision(17);
+    out << "Id GeneID Chrom";
+    for (auto &col : columns) out << " " << col.first << " " << col.first << "SE";
+    out << "\n";
+    for (unsigned i=0;i<data.numKeptGenes;++i) {
+        auto *gene=data.keptGeneInfoVec[i];
+        out << i+1 << " " << gene->ensemblID << " " << gene->chrom;
+        for (auto &col : columns) {
+            auto *sample=col.second;
+            const double mean=sample->posteriorMean[i];
+            out << " " << mean << " " << sqrt(std::max(0.0,sample->posteriorSqrMean[i]-mean*mean));
+        }
+        out << "\n";
     }
-    out.close();
 }
-
 
 void Omics::outputPartitionedSnpResults(const Data &data,const vector<McmcSamples*> &mcmcSampleVec,const string &mcmcType,const bool noscale, const string &filename){
     // output gene-snp pair
     map<string,McmcSamples*> eQTLJointVecMap,snpEffectVecMap,eQTLJointVecPipMap,snpEffectVecPipMap;
     boost::regex patternEqtl("EQTLJointVec_(.*)");
     boost::regex patternSNP("SnpJointVec_(.*)");
+    boost::regex patternEqtlPip("deltaEQTL_(.*)");
+    boost::regex patternGWASPip("deltaGWAS_(.*)");
     smatch matches;
     string geneID;
     for(unsigned i = 0; i < mcmcSampleVec.size(); i++){
-        // GWAS gene-snp pair
+        // snp
         if (regex_match(mcmcSampleVec[i]->label, matches, patternSNP)) {
             if (matches.size() > 1 && mcmcSampleVec[i]->label != "SnpJointVec_nonEqtl" ) snpEffectVecMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
         } 
-        // eQTL gene-eqtl pair
+        // pip for snp 
+        if (regex_match(mcmcSampleVec[i]->label, matches, patternGWASPip)) {
+            if (matches.size() > 1  && mcmcSampleVec[i]->label != "deltaGWAS_nonEqtl") snpEffectVecPipMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
+        } 
         if (regex_match(mcmcSampleVec[i]->label, matches, patternEqtl)) {
             if (matches.size() > 1) eQTLJointVecMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
         } 
+        // pip for eqtl
+        {
+            if (regex_match(mcmcSampleVec[i]->label, matches, patternEqtlPip)) {
+                if (matches.size() > 1) eQTLJointVecPipMap.insert(pair<string,McmcSamples*>(matches[1].str(),mcmcSampleVec[i]));
+            } 
+        }
     }
-
     if(snpEffectVecMap.size() ==0 || eQTLJointVecMap.size() == 0){
         LOGGER.w(0,"Partitioned gwas snp and xqtl effect is zero when generating SNP results in the .gene.snpRes.gz file ");
         return;
@@ -764,18 +706,21 @@ void Omics::outputPartitionedSnpResults(const Data &data,const vector<McmcSample
             //    }
             // here we not weight 2pq to avoid allele frequency discrepancy issue
             // double sqrt2pq = sqrt(2.0 * eqtl->af * (1- eqtl->af));
-            double sqrtScaleFactoreQTL = (data.scalingeQTLFactorVecVec[j][i]);
+            double sqrtScaleFactoreQTL;
+            if (j < data.scalingeQTLFactorVecVec.size() && i < data.scalingeQTLFactorVecVec[j].size())
+                sqrtScaleFactoreQTL = data.scalingeQTLFactorVecVec[j][i];
+            else if (!data.suppliedGenotypeScale.empty())
+                sqrtScaleFactoreQTL = data.suppliedGenotypeScale.at(snpIDInGene[i]);
+            else sqrtScaleFactoreQTL = sqrt(2.0*eqtl->af*(1.0-eqtl->af));
             double sqrtScaleFactorGWAS = (snp->scaleFactor);
             //// beta effect
             double betaEffect = (eqtl->flipped ? - snpEffectVecMap.at(geneID)->posteriorMean[i] : snpEffectVecMap.at(geneID)->posteriorMean[i]);
             // double lastBeta = (snp->flipped ? -lastSample[idx] : lastSample[idx]);
-            double betaSE = sqrt(snpEffectVecMap.at(geneID)->posteriorSqrMean[i]-snpEffectVecMap.at(geneID)->posteriorMean[i] * snpEffectVecMap.at(geneID)->posteriorMean[i]);
-            double betaPIP = snpEffectVecMap.at(geneID)->pip[i];
+            double betaSE = sqrt(std::max(0.0,snpEffectVecMap.at(geneID)->posteriorSqrMean[i]-snpEffectVecMap.at(geneID)->posteriorMean[i] * snpEffectVecMap.at(geneID)->posteriorMean[i]));
             /// alpha effect 
             double alphaEffect = (eqtl->flipped ? -eQTLJointVecMap.at(geneID)->posteriorMean[i] : eQTLJointVecMap.at(geneID)->posteriorMean[i]);
             // double lastBeta = (snp->flipped ? -lastSample[idx] : lastSample[idx]);
-            double alphaSE = sqrt(eQTLJointVecMap.at(geneID)->posteriorSqrMean[i]-eQTLJointVecMap.at(geneID)->posteriorMean[i] * eQTLJointVecMap.at(geneID)->posteriorMean[i]);
-            double alphaPIP = eQTLJointVecMap.at(geneID)->pip[i];
+            double alphaSE = sqrt(std::max(0.0,eQTLJointVecMap.at(geneID)->posteriorSqrMean[i]-eQTLJointVecMap.at(geneID)->posteriorMean[i] * eQTLJointVecMap.at(geneID)->posteriorMean[i]));
 
             // here we need to outline 
             out << boost::format("%-15s %-12s %6s %12s %6s %6s %12.6f %-15.6e %-15.6e %-15.6e %-15.6e %-15.6e %-15.6e")
@@ -788,11 +733,15 @@ void Omics::outputPartitionedSnpResults(const Data &data,const vector<McmcSample
             % (eqtl->flipped ? 1.0-eqtl->af : eqtl->af)
             % (noscale ? betaEffect : betaEffect/sqrtScaleFactorGWAS)
             % (noscale ? betaSE : betaSE/sqrtScaleFactorGWAS)
-            % betaPIP
+            // % snpEffectVecPipMap.at(geneID)->posteriorMean[i]
+            % snpEffectVecMap.at(geneID)->pip[i]
             % (noscale ? alphaEffect : alphaEffect/sqrtScaleFactoreQTL)
             % (noscale ? alphaSE : alphaSE/sqrtScaleFactoreQTL)
-            % alphaPIP;
+            // % eQTLJointVecPipMap.at(geneID)->posteriorMean[i];
+            % eQTLJointVecMap.at(geneID)->pip[i];
             out << endl;
+
+            // cout << " pip " << snpEffectVecPipMap.at(geneID)->pip << " ";
         }
     }
     boost::iostreams::close(outGZ);
@@ -827,5 +776,4 @@ void Omics::pip2p(const Data &data, const VectorXd &pip, const double propNull, 
         pval[i] = pip2pMap[pip[i]];
     }
 }
-
 

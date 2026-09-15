@@ -152,8 +152,6 @@ public:
         double sumSq;
         unsigned numNonZeros;
         
-        VectorXd posteriorMean;
-        VectorXd posteriorMeanPIP;
         VectorXd pip;
         
         enum {gibbs, hmc} algorithm;
@@ -161,29 +159,21 @@ public:
         unsigned cnt;
         double mhr;
 
-        bool shuffle;
-        vector<int> snpIndexVec;
-
+        
         SnpEffects(const vector<string> &header, const string &alg, const string &lab = "SnpEffects")
         : ParamSet(lab, header){
             sumSq = 0.0;
             numNonZeros = 0;
-            posteriorMean.setZero(size);
-            posteriorMeanPIP.setZero(size);
             pip.setZero(size);
             if (alg=="HMC") algorithm = hmc;
             else algorithm = gibbs;
             cnt = 0;
             mhr = 0.0;
-
-            shuffle = true;  // shuffle SNP order
-            snpIndexVec.resize(size);
-            for (unsigned i=0; i<size; i++) snpIndexVec[i] = i;
         }
         
-        void sampleFromFC(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
+        void sampleFromFC(VectorXd &ycorr, const GenotypeView &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
                           const double sigmaSq, const double pi, const double vare, VectorXd &ghat);
-        void gibbsSampler(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
+        void gibbsSampler(VectorXd &ycorr, const GenotypeView &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
                           const double sigmaSq, const double pi, const double vare, VectorXd &ghat);
         void hmcSampler(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag,
                         const double sigmaSq, const double pi, const double vare, VectorXd &ghat);
@@ -192,8 +182,8 @@ public:
         double computeU(const VectorXd &alpha, const MatrixXd &ZPZ, const VectorXd &ypZ,
                        const double sigmaSq, const double vare);
         
-        void sampleFromFC_omp(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag, const double sigmaSq, const double pi, const double vare, VectorXd &ghat);
-        void computePosteriorMean(const unsigned iter);
+        void sampleFromFC_omp(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag,
+                              const double sigmaSq, const double pi, const double vare, VectorXd &ghat);
 
     };
     
@@ -320,7 +310,7 @@ public:
         Rounding(const string &lab = "Rounding"): Parameter(lab){
             count = 0;
         }
-        void computeYcorr(const VectorXd &y, const MatrixXd &X, const MatrixXd &W, const MatrixXd &Z,
+        void computeYcorr(const VectorXd &y, const MatrixXd &X, const MatrixXd &W, const GenotypeView &Z,
                           const VectorXd &fixedEffects, const VectorXd &randomEffects, const VectorXd &snpEffects,
                           VectorXd &ycorr);
     };
@@ -419,7 +409,7 @@ public:
             sum2pq = 0.0;
         }
         
-        void sampleFromFC(VectorXd &ycorr, const MatrixXd &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
+        void sampleFromFC(VectorXd &ycorr, const GenotypeView &Z, const VectorXd &ZPZdiag, const VectorXd &Rsqrt, const bool weightedRes,
                           const double sigmaSq, const VectorXd &pis,  const VectorXd &gamma,
                           const double vare, VectorXd &ghat, VectorXd &snpStore,
                           const double varg, const bool originalModel);
@@ -482,7 +472,7 @@ public:
             values.setZero(ndist);
         }
         
-        void compute(const VectorXd &snpEffects, const MatrixXd &Z, const vector<vector<unsigned> > snpset, const double varg);
+        void compute(const VectorXd &snpEffects, const GenotypeView &Z, const vector<vector<unsigned> > snpset, const double varg);
     };
 
     class NumSnpMixComps : public vector<Parameter*> {
@@ -535,6 +525,7 @@ public:
            Pis[i]->value=Pis.values[i];
         }
         paramVec     = {&nnzSnp, &sigmaSq, &vare, &varg, &hsq};
+        paramVec.insert(paramVec.end(),Pis.begin(),Pis.end());
         if (originalModel) paramVec.insert(paramVec.begin(), Vgs.begin(), Vgs.end());
         paramVec.insert(paramVec.begin(), numSnps.begin(), numSnps.end());
         paramToPrint = {&sigmaSq, &vare, &varg, &hsq};
@@ -580,12 +571,10 @@ public:
         VectorXd nnzPerBlk;
         VectorXi leaveout;
         VectorXd ssqBlocks;
-        VectorXi badSnps;
 
         SnpEffects(const vector<string> &header): BayesC::SnpEffects(header, "Gibbs"){
             sum2pq = 0.0;
             leaveout.setZero(size);
-            badSnps.setZero(size);
         }
         
         void sampleFromFC(VectorXd &rcorr, const vector<SparseVector <double>  > &ZPZsp, const VectorXd &ZPZdiag, const VectorXd &ZPy,
@@ -747,34 +736,6 @@ public:
         
         void compute(const double nnzGwas, const unsigned numSnps);
     };
-
-
-    class NumBadSnps : public Parameter {
-    public:
-        double betaThresh;
-        vector<string> snpNames;
-        vector<string> badSnpName;
-        vector<unsigned> badSnpIdx;
-        ofstream out;
-        
-        bool writeTxt;
-        
-        NumBadSnps(const string &title, const VectorXd &b, const vector<string> &snpNames): Parameter("NumSkeptSnp"), snpNames(snpNames){
-            VectorXd abs_b = b.array().abs();
-            std::sort(abs_b.data(), abs_b.data() + abs_b.size());
-            int index8 = 0.8 * (abs_b.size() - 1);
-            betaThresh = abs_b[index8];
-            //cout << "Set beta cutoff threshold: " << betaThresh << endl;
-            //cout << b.head(10) << endl;
-            
-            string filename = title + ".skepticalSNPs";
-            out.open(filename.c_str());
-            writeTxt = true;
-        }
-        void compute_eigen(VectorXi &badSnps, VectorXd &effects, VectorXd &effectMean, const VectorXd &b, vector<VectorXd> &wcorrBlocks, const vector<MatrixXd> &Qblocks, const vector<LDBlockInfo*> keptLdBlockInfoVec, const int iter);
-    };
-    
-
     
 public:
     const Data &data;
@@ -799,7 +760,6 @@ public:
     GenotypicVar varg;
 //    BayesC::ResidualVar vare;
     Rounding rounding;
-    NumBadSnps nBadSnps;
     varEffectScaled sigmaSqG;
 //    Overdispersion tauSq;
     PopulationStratification ps;
@@ -842,9 +802,9 @@ public:
     , robustMode(robustMode)
     , vargBlk(data.ldblockNames, varGenotypic, data.numKeptInds)
     , vareBlk(data.ldblockNames, data.varPhenotypic)
-    , nBadSnps(data.title, data.b, data.snpEffectNames)
     , lowRankModel(lowrank)
     {
+        if (data.matchedGWAS) { vareBlk.values.setConstant(varResidual); vareBlk.mean = varResidual; }
         sparse = data.sparseLDM;
         modelPS = estimatePS;
         diagnose = diagnosticMode;
@@ -895,6 +855,10 @@ public:
         }
     }
     
+    unsigned mcmcIteration = 0;
+    void sampleMatchedVariances(const VectorXd &effects, const VectorXd &summaryResidual,
+                               const vector<VectorXd> &pcFitted, BayesC::ResidualVar &residual,
+                               Parameter &genetic, BlockResidualVar &residualBlocks, BlockGenotypicVar &geneticBlocks);
     void sampleUnknowns(void);
     static void ldScoreReg(const VectorXd &chisq, const VectorXd &LDscore, const VectorXd &LDsamplVar,
                            const double varg, const double vare, double &ps);
@@ -1032,6 +996,7 @@ public:
     vargBlk(data.ldblockNames, varGenotypic, data.numKeptInds),
     vareBlk(data.ldblockNames, data.varPhenotypic)
     {
+        if (data.matchedGWAS) { vareBlk.values.setConstant(varResidual); vareBlk.mean = varResidual; }
         if (alg == "cg") algorithm = cg;
         else if (alg == "MH") algorithm = mh;
         else algorithm = gibbs;
@@ -1044,6 +1009,7 @@ public:
            Pis[i]->value=Pis.values[i];  
         }
         paramVec     = {&nnzSnp, &sigmaSq, &vare, &varg, &hsq};
+        paramVec.insert(paramVec.end(),Pis.begin(),Pis.end());
         if (originalModel) paramVec.insert(paramVec.begin(), Vgs.begin(), Vgs.end());
         paramVec.insert(paramVec.begin(), numSnps.begin(), numSnps.end());
         paramToPrint = {&sigmaSq, &vare, &varg, &hsq};

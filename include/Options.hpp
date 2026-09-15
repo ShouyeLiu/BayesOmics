@@ -46,23 +46,25 @@ class Options
 
     private:
     bool boostProgramOptionsRoutine(int argc, const char* const argv[]);
+    void checkMutuallyExclusive(const boost::program_options::variables_map& vm,const std::vector<std::string>& opts);
     void customCheck();
     void setThread(void);
 
     public:
     // Here we define various option variables
     boost::program_options::variables_map vm;
-    // unsigned seed;
-    //std::string famFile;
     static const double MIX_PARAM_ESTIMATE_FLAG; // flag for estimating mixture params using CV
 
-    // debug mode
     bool diagnosticMode; // for sbayes debug
     bool dataMode; 
     // Basic settings
     std::string title;
+    std::string subtitle;
+    bool titleIsFolderBool;
     std::string analysisType;
     int numThreads;
+    std::string threadRequest = "auto";
+    std::string memoryRequest="auto", genotypeStorage="auto", mcmcStorage="auto";
     int seed;
     string algorithm;
     string optionFile;
@@ -105,6 +107,9 @@ class Options
     bool jackknife;   // jackknife estimate for LD sampling variance
     bool excludeAmbiguousSNP;  // exlcude ambiguous SNPs with A/T or G/C alleles
     bool sampleOverlap;  // whether LD ref is the same as GWAS sample
+    bool matchedGWAS = false; // Exact same-cohort GWAS likelihood, with empirical genotype scaling.
+    bool fixedResidual = false;
+    double suppliedPhenotypicVariance = 0.0;
     bool imputeN;  // impute per-SNP sample size
     string bedFile;
     string alleleFreqFile;
@@ -113,6 +118,9 @@ class Options
     string excludeRegionFile;
     string snpResFile;
     string gwasSummaryFile;
+    // LD correlation
+    bool isCovBool; // calculate correlation or covariance. if isCovBool = true: genotype covariance matrix; false: correlation matrix
+    int ldBlockRegionWind;
     string ldmatrixFile;
     string skeletonSnpFile;
     string ldscoreFile;
@@ -125,8 +133,12 @@ class Options
     string geneEigenMatrixFile;
     string ldBlockInfoFile;
     string geneListFile; // read gene infomation for eigen-decomposition in SBayesOmics
+    string geneAnnotationFile; // Chr Start End GeneID; midpoint +/- --cis-wind
     bool outInfoOnly;
     string geneInfoFile; // read plist file in BayesOmics 
+    string geneSnpMapFile;
+    string genotypeScaleFile;
+    bool ldCorrelation = false;
     string keepIndGeneFile;
 
     /// Phenotype-related settings
@@ -229,6 +241,8 @@ class Options
         dataMode = false;
         // Basic settings
         title = "BayesOmics";
+        subtitle = "";
+        titleIsFolderBool = false;
         analysisType = "bayes";
         numThreads = 1;
         seed = 2023;
@@ -257,8 +271,6 @@ class Options
         mergeBesdBool = false;
         mergeEigenGeneBool = false;
         
-
-
         /// Genotype-related settings
         windowWidth = 0 * Megabase; // in mega-base unit
         cisRegionWind = 0.1 * Megabase; // used to define cis-region window
@@ -282,6 +294,8 @@ class Options
         excludeRegionFile = "";
         snpResFile = "";
         gwasSummaryFile = "";
+        isCovBool = false;
+        ldBlockRegionWind = 0;
         ldmatrixFile = "";
         skeletonSnpFile = "";
         ldscoreFile = "";
@@ -323,10 +337,10 @@ class Options
         includeSpecificGeneID = "";
 
         /// MCMC settings
-        mcmcType = "AIAO";
+        mcmcType = "EIEO";
         eieoLatentBool = false;
-        sampleVareBool = false;
-        sampleVarEpsBool = false;
+        sampleVareBool = true;
+        sampleVarEpsBool = true;
         numChains = 1 ;
         chainLength = 20000;
         burnin = 1000;
