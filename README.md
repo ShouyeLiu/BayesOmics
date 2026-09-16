@@ -12,6 +12,8 @@ heritability components.
 [Papers](#papers) ·
 [Report an issue](https://github.com/ShouyeLiu/BayesOmics/issues)
 
+
+
 ## Papers
 
 Please cite the paper corresponding to the method used in your analysis.
@@ -23,6 +25,12 @@ Please cite the paper corresponding to the method used in your analysis.
 Shouye Liu, Yang Wu, Zhili Zheng, Hao Cheng, Michael E. Goddard, Jian Yang,
 Peter M. Visscher and Jian Zeng. **medRxiv preprint**, 10 March 2026.
 [DOI: 10.64898/2026.03.10.26347908](https://doi.org/10.64898/2026.03.10.26347908).
+
+## Model overview
+
+![Bayesian bivariate EIEO model linking trait and molecular phenotypes, with intergenic and genic SNP effects and mixture inclusion states](docs/20250326-bayesian-bivariate-eieo-model.png)
+
+*Bayesian bivariate EIEO model: trait and molecular effects, genomic regions, and mixture inclusion states.*
 
 **Method in this release:** SBayesCO-EIEO, with individual-level and summary-level
 analysis paths. The paper introduces joint modelling of GWAS and molecular QTL
