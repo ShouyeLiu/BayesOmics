@@ -48,7 +48,9 @@
 #define FNAMESIZE 4096
 #define SNPMISSRATE 0.3
 #define MIN_PVAL_ADJUSTED 1e-150
+#ifndef BayesOmics_VERSION
 #define BayesOmics_VERSION "v1.0.0"
+#endif
 #define MISSING_XQTL_RATE_PER_GENE  0.3
 // Define a macro for the time zone
 #define TIME_ZONE "AEST" // Australian Eastern Standard Time
